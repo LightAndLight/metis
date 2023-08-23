@@ -39,15 +39,19 @@ data Expr
   = Simple Simple
   | LetS Var VarInfo Simple Expr
   | LetC Var VarInfo Compound Expr
+  deriving (Show)
 
 data Simple
   = Var Var
   | Literal Literal
+  deriving (Show)
 
 data Compound
   = Binop Binop Simple Simple
+  deriving (Show)
 
 data Binop = Add | Subtract
+  deriving (Show)
 
 newtype AnfBuilderT m a = AnfBuilderT {value :: StateT Word64 m a}
   deriving (Functor, Applicative, Monad)
@@ -76,6 +80,7 @@ letC varInfo value mkRest = do
   LetC var varInfo value <$> mkRest var
 
 data VarInfo = VarInfo {size :: Word64}
+  deriving (Show)
 
 typeVarInfo :: Type -> VarInfo
 typeVarInfo ty = VarInfo{size = Type.sizeOf ty}

@@ -14,6 +14,7 @@ data Literal
   | Uint16 Word16
   | Uint32 Word32
   | Uint64 Word64
+  deriving (Show)
 
 typeOf :: Literal -> Type
 typeOf lit =

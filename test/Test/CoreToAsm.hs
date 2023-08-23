@@ -18,6 +18,7 @@ import Metis.Core (Compound (..), Expr (..), Simple (..))
 import Metis.Isa (Isa (generalPurposeRegisters))
 import Metis.Isa.X86_64 (Register (..), X86_64)
 import qualified Metis.Literal as Literal
+import Metis.Log (noLogging)
 import qualified Metis.Type as Type (Type (..))
 import System.Exit (ExitCode (..))
 import qualified System.Process as Process
@@ -34,7 +35,7 @@ testCase :: TestCase -> SpecWith ()
 testCase TestCase{title, expr, availableRegisters, expectedOutput} =
   it title $ do
     let anf = Anf.fromCore absurd expr
-    let (insts, _) = allocateRegisters_X86_64 availableRegisters anf
+    (insts, _) <- noLogging $ allocateRegisters_X86_64 availableRegisters anf
     let asm = Text.Lazy.Builder.toLazyText (printInstructions_X86_64 insts)
     asm `shouldBe` Text.Lazy.Builder.toLazyText (foldMap @[] (<> "\n") expectedOutput)
 
