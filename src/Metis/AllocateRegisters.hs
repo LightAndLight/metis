@@ -1,4 +1,3 @@
-{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -6,17 +5,14 @@
 {-# OPTIONS_GHC -Wno-ambiguous-fields #-}
 
 module Metis.AllocateRegisters (
-  Expr2 (..),
-  Expr3 (..),
-  Compound (..),
-  Simple (..),
+  allocateRegisters_X86_64,
+
+  -- * Internals
   Location (..),
   AllocateRegistersState (..),
   initialAllocateRegistersState,
-  allocateRegisters_X86_64,
   allocateRegistersExpr_X86_64,
   allocateRegistersCompound_X86_64,
-  allocateRegistersSimple,
 ) where
 
 import Control.Monad.State.Class (MonadState, gets, modify)
@@ -30,28 +26,11 @@ import qualified Data.Sequence as Seq
 import Data.Word (Word64)
 import Metis.Isa (Add, Instruction, Isa, Memory (..), Register, Sub, add, imm, mov, pop, push, sub)
 import Metis.Isa.X86_64 (Register (..), X86_64)
-import Metis.Literal (Literal)
 import qualified Metis.SSA as SSA
 
 data Location isa
   = Register (Register isa)
   | Stack {offset :: Int64}
-
-data Simple isa
-  = Location (Location isa)
-  | Literal Literal
-
-data Compound isa
-  = Add (Simple isa) (Simple isa)
-  | Subtract (Simple isa) (Simple isa)
-
-data Expr2 isa
-  = Var2 (Location isa)
-  | Inst2 (Compound isa) (Expr2 isa)
-
-data Expr3 isa
-  = Var3 (Location isa)
-  | Let3 (Location isa) (Compound isa) (Expr3 isa)
 
 data AllocateRegistersState isa = AllocateRegistersState
   { nextStackOffset :: Int64
@@ -180,16 +159,6 @@ allocateRegistersCompound_X86_64 varSizes destination compound =
               pure [op' locationA' destination']
             Register locationA' ->
               pure [op' locationA' destination']
-
-allocateRegistersSimple ::
-  (MonadState (AllocateRegistersState isa) m, Isa isa) =>
-  HashMap SSA.Var Word64 ->
-  SSA.Simple ->
-  m (Simple isa)
-allocateRegistersSimple varSizes simple =
-  case simple of
-    SSA.SVar var -> Location <$> autoAssignVar varSizes var
-    SSA.Literal lit -> pure $ Literal lit
 
 assignVar ::
   forall isa m.
