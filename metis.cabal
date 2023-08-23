@@ -31,7 +31,8 @@ library
         Metis.Isa
         Metis.Isa.X86_64
         Metis.Literal
-        Metis.SSA
+        Metis.Anf
+        Metis.Type
     -- other-modules:
     -- other-extensions:
     build-depends:    base >=4.17.0.0, bound, sage, text >=2.0, deriving-compat, mtl, unordered-containers, hashable, lens, containers

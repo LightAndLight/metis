@@ -1,2 +1,3 @@
 indentation: 2
 indent-wheres: true
+single-constraint-parens: false

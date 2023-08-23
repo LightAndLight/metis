@@ -12,13 +12,13 @@ import Data.Text.Lazy.Builder (Builder)
 import qualified Data.Text.Lazy.Builder as Text.Lazy.Builder
 import Data.Void (Void, absurd)
 import Metis.AllocateRegisters (allocateRegisters_X86_64)
+import qualified Metis.Anf as Anf
 import Metis.Codegen (printInstructions_X86_64)
 import Metis.Core (Compound (..), Expr (..), Simple (..))
-import qualified Metis.Core as Type (Type (..))
 import Metis.Isa (Isa (generalPurposeRegisters))
 import Metis.Isa.X86_64 (Register (..), X86_64)
 import qualified Metis.Literal as Literal
-import qualified Metis.SSA as SSA
+import qualified Metis.Type as Type (Type (..))
 import System.Exit (ExitCode (..))
 import qualified System.Process as Process
 import Test.Hspec (Spec, SpecWith, describe, expectationFailure, it, shouldBe)
@@ -33,8 +33,8 @@ data TestCase = TestCase
 testCase :: TestCase -> SpecWith ()
 testCase TestCase{title, expr, availableRegisters, expectedOutput} =
   it title $ do
-    let ssa = SSA.fromCore 0 absurd expr
-    let (insts, _) = allocateRegisters_X86_64 availableRegisters ssa
+    let anf = Anf.fromCore absurd expr
+    let (insts, _) = allocateRegisters_X86_64 availableRegisters anf
     let asm = Text.Lazy.Builder.toLazyText (printInstructions_X86_64 insts)
     asm `shouldBe` Text.Lazy.Builder.toLazyText (foldMap @[] (<> "\n") expectedOutput)
 
@@ -59,8 +59,8 @@ spec =
             let
               lit99 = Literal $ Literal.Uint64 99
              in
-              Let Nothing Type.Uint64 (Add lit99 lit99) . toScope $
-                Var (B ())
+              LetC Nothing Type.Uint64 (Add lit99 lit99) . toScope $
+                Simple (Var $ B ())
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
             [ "mov $99, %rax"
@@ -73,9 +73,9 @@ spec =
             let
               lit99 = Literal $ Literal.Uint64 99
              in
-              Let Nothing Type.Uint64 (Simple lit99) . toScope $
-                Let Nothing Type.Uint64 (Add (SVar $ B ()) (SVar $ B ())) . toScope $
-                  Var (B ())
+              LetS Nothing Type.Uint64 lit99 . toScope $
+                LetC Nothing Type.Uint64 (Add (Var $ B ()) (Var $ B ())) . toScope $
+                  Simple (Var $ B ())
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
             [ "mov $99, %rax"
@@ -89,10 +89,10 @@ spec =
               lit99 = Literal $ Literal.Uint64 99
               lit100 = Literal $ Literal.Uint64 100
              in
-              Let Nothing Type.Uint64 (Simple lit99) . toScope $
-                Let Nothing Type.Uint64 (Simple lit100) . toScope $
-                  Let Nothing Type.Uint64 (Add (SVar $ F $ B ()) (SVar $ B ())) . toScope $
-                    Var (B ())
+              LetS Nothing Type.Uint64 lit99 . toScope $
+                LetS Nothing Type.Uint64 lit100 . toScope $
+                  LetC Nothing Type.Uint64 (Add (Var $ F $ B ()) (Var $ B ())) . toScope $
+                    Simple (Var $ B ())
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
             [ "mov $99, %rbx"
@@ -108,12 +108,12 @@ spec =
               lit100 = Literal $ Literal.Uint64 100
               lit101 = Literal $ Literal.Uint64 101
              in
-              Let Nothing Type.Uint64 (Simple lit99) . toScope $
-                Let Nothing Type.Uint64 (Simple lit100) . toScope $
-                  Let Nothing Type.Uint64 (Simple lit101) . toScope $
-                    Let Nothing Type.Uint64 (Add (SVar $ F $ F $ B ()) (SVar $ F $ B ())) . toScope $
-                      Let Nothing Type.Uint64 (Add (SVar $ B ()) (SVar $ F $ B ())) . toScope $
-                        Var (B ())
+              LetS Nothing Type.Uint64 lit99 . toScope $
+                LetS Nothing Type.Uint64 lit100 . toScope $
+                  LetS Nothing Type.Uint64 lit101 . toScope $
+                    LetC Nothing Type.Uint64 (Add (Var $ F $ F $ B ()) (Var $ F $ B ())) . toScope $
+                      LetC Nothing Type.Uint64 (Add (Var $ B ()) (Var $ F $ B ())) . toScope $
+                        Simple (Var $ B ())
         , availableRegisters = generalPurposeRegisters @X86_64
         , {-
           %0 = 99
@@ -162,12 +162,12 @@ spec =
               lit100 = Literal $ Literal.Uint64 100
               lit101 = Literal $ Literal.Uint64 101
              in
-              Let Nothing Type.Uint64 (Simple lit99) . toScope $
-                Let Nothing Type.Uint64 (Simple lit100) . toScope $
-                  Let Nothing Type.Uint64 (Simple lit101) . toScope $
-                    Let Nothing Type.Uint64 (Add (SVar $ F $ F $ B ()) (SVar $ F $ B ())) . toScope $
-                      Let Nothing Type.Uint64 (Add (SVar $ B ()) (SVar $ F $ B ())) . toScope $
-                        Var (B ())
+              LetS Nothing Type.Uint64 lit99 . toScope $
+                LetS Nothing Type.Uint64 lit100 . toScope $
+                  LetS Nothing Type.Uint64 lit101 . toScope $
+                    LetC Nothing Type.Uint64 (Add (Var $ F $ F $ B ()) (Var $ F $ B ())) . toScope $
+                      LetC Nothing Type.Uint64 (Add (Var $ B ()) (Var $ F $ B ())) . toScope $
+                        Simple (Var $ B ())
         , availableRegisters = [Rax]
         , {-
           %0 = 99
