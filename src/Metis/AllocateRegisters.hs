@@ -26,6 +26,7 @@ import Data.Int (Int64)
 import qualified Data.Maybe as Maybe
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
+import qualified Data.Text as Text
 import Data.Word (Word64)
 import GHC.Stack (HasCallStack)
 import qualified Metis.Anf as Anf
@@ -35,6 +36,7 @@ import Metis.Literal (Literal)
 import qualified Metis.Literal as Literal
 import Metis.Liveness (Liveness (..))
 import Metis.Log (MonadLog)
+import qualified Metis.Log as Log
 import qualified Metis.Type as Type
 
 data Location isa
@@ -122,18 +124,18 @@ allocateRegistersSimple_X86_64 simple =
     Anf.Literal lit ->
       allocateRegistersLiteral_X86_64 lit
 
-freeDeadBefore :: (MonadState (AllocateRegistersState isa) m) => Anf.Var -> m ()
-freeDeadBefore var = do
+freeKills :: (MonadState (AllocateRegistersState isa) m) => Anf.Var -> m ()
+freeKills var = do
   liveness <- lookupLiveness var
   modify
     ( \s ->
-        let (locations', freed) =
-              ( HashMap.filterWithKey (\k _ -> k `HashSet.member` liveness.before) s.locations
-              , HashMap.foldrWithKey' (\k v acc -> if not (k `HashSet.member` liveness.before) then v : acc else acc) [] s.locations
-              )
+        let freed =
+              HashMap.foldrWithKey'
+                (\k v acc -> if k `HashSet.member` liveness.kills then v : acc else acc)
+                []
+                s.locations
          in s
-              { locations = locations'
-              , available =
+              { available =
                   foldr
                     ( \location acc ->
                         case location of
@@ -155,7 +157,7 @@ allocateRegistersExpr_X86_64 varSizes expr =
     Anf.Simple simple ->
       allocateRegistersSimple_X86_64 simple
     Anf.LetS var varInfo value rest -> do
-      freeDeadBefore var
+      freeKills var
 
       value' <- do
         (insts, location) <- case value of
@@ -176,27 +178,51 @@ allocateRegistersExpr_X86_64 varSizes expr =
 
       pure (value' <> rest', location)
     Anf.LetC var _varInfo value rest -> do
-      freeDeadBefore var
-
       value' <-
         case value of
           Anf.Binop op a b -> do
+            Log.trace . Text.pack $ "LetC variable: " <> show var
+            Log.trace . Text.pack $ "LetC value: " <> show value
+
             let op' :: (Add X86_64 a b, Sub X86_64 a b) => a -> b -> Instruction X86_64
                 op' =
                   case op of
                     Anf.Add -> add
                     Anf.Subtract -> sub
 
+            freeKills var
+
             (bInsts, bLocation) <-
               case b of
                 Anf.Literal lit ->
                   allocateRegistersLiteral_X86_64 lit
                 Anf.Var bVar -> do
+                  liveness <- lookupLiveness var
                   bLocation <- lookupLocation bVar
-                  liveness <- lookupLiveness bVar
+
                   insts <-
-                    if bVar `HashSet.member` liveness.after
+                    {- x86-64 2-operand instructions such as `add` and `sub` store their result in
+                    their second operand (assuming AT&T syntax).
+
+                    Thus for an A-normal form instruction like `%1 = add(%2, %3)`, `%1` and `%3`
+                    need to be assigned the same location. The fast path is when `%1` kills `%3`:
+                    after the instruction `%3` is no longer relevant, so `%1` can steal `%3`'s
+                    location.
+
+                    When `%1` *doesn't* kill `%3`, we have to assign a fresh location to `%1` and
+                    move the contents of `%3` to this location before executing the instruction.
+                    `%3` is still relevant later on so we have to preserve its value.
+                    -}
+                    if bVar `HashSet.member` liveness.kills
                       then do
+                        {- `var` "kills" `bVar`, which means `bVar` is not used after this instruction.
+
+                        `bVar`'s location can be safely reused for `var`.
+                        -}
+                        Log.trace . Text.pack $ show bVar <> " in " <> show liveness.kills
+                        pure []
+                      else do
+                        Log.trace . Text.pack $ show bVar <> " not in " <> show liveness.kills
                         {-
                         After this instruction, `bVar`'s location is "owned" by `var`.
                         `bVar` is used after this instruction, which means `bVar`'s location needs to
@@ -255,11 +281,6 @@ allocateRegistersExpr_X86_64 varSizes expr =
                               , mov Rax Mem{base = Rbp, offset = bOffset'}
                               , pop Rax
                               ]
-                      else do
-                        {- `bVar` is not used after this instruction, so its location can permanently
-                        passed to `var`.
-                        -}
-                        pure []
                   pure (insts, bLocation)
 
             insts <-

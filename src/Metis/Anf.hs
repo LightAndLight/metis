@@ -3,7 +3,7 @@
 
 module Metis.Anf (
   Expr (..),
-  Var,
+  Var (..),
   VarInfo (..),
   Simple (..),
   Compound (..),
