@@ -12,8 +12,6 @@ module Metis.Anf (
   -- * Core translation
   fromCore,
   fromCoreExpr,
-  fromCoreCompound,
-  fromCoreSimple,
 
   -- * ANF expression builder
   AnfBuilderT,
@@ -39,19 +37,19 @@ data Expr
   = Simple Simple
   | LetS Var VarInfo Simple Expr
   | LetC Var VarInfo Compound Expr
-  deriving (Show)
+  deriving (Show, Eq)
 
 data Simple
   = Var Var
   | Literal Literal
-  deriving (Show)
+  deriving (Show, Eq)
 
 data Compound
   = Binop Binop Simple Simple
-  deriving (Show)
+  deriving (Show, Eq)
 
 data Binop = Add | Subtract
-  deriving (Show)
+  deriving (Show, Eq)
 
 newtype AnfBuilderT m a = AnfBuilderT {value :: StateT Word64 m a}
   deriving (Functor, Applicative, Monad)
@@ -80,40 +78,109 @@ letC varInfo value mkRest = do
   LetC var varInfo value <$> mkRest var
 
 data VarInfo = VarInfo {size :: Word64}
-  deriving (Show)
+  deriving (Show, Eq)
 
 typeVarInfo :: Type -> VarInfo
 typeVarInfo ty = VarInfo{size = Type.sizeOf ty}
 
-fromCore :: (a -> Var) -> Core.Expr a -> Expr
-fromCore toVar = runIdentity . runAnfBuilderT . fromCoreExpr toVar
+fromCore :: (a -> (Var, Type)) -> Core.Expr a -> Expr
+fromCore toVar expr =
+  runIdentity . runAnfBuilderT $ do
+    expr' <- fromCoreExpr toVar expr
+    resultToExpr (Core.typeOf (snd . toVar) expr) expr'
 
-fromCoreExpr :: (Monad m) => (a -> Var) -> Core.Expr a -> AnfBuilderT m Expr
+splitExpr :: Expr -> (Expr -> Expr, Simple)
+splitExpr expr =
+  case expr of
+    Simple simple -> (id, simple)
+    LetS var info simple rest ->
+      let (f, x) = splitExpr rest
+       in (LetS var info simple . f, x)
+    LetC var info compound rest ->
+      let (f, x) = splitExpr rest
+       in (LetC var info compound . f, x)
+
+data FromCoreResult
+  = SimpleResult Simple
+  | CompoundResult Compound
+  | ExprResult Expr
+
+resultToExpr ::
+  (Monad m) =>
+  Type ->
+  FromCoreResult ->
+  AnfBuilderT m Expr
+resultToExpr ty result =
+  case result of
+    SimpleResult simple -> letS (typeVarInfo ty) simple (pure . Simple . Var)
+    CompoundResult compound -> letC (typeVarInfo ty) compound (pure . Simple . Var)
+    ExprResult expr -> pure expr
+
+letResult :: (Monad m) => FromCoreResult -> Type -> (Var -> AnfBuilderT m Expr) -> AnfBuilderT m Expr
+letResult value ty rest =
+  case value of
+    SimpleResult valueSimple ->
+      letS (typeVarInfo ty) valueSimple rest
+    CompoundResult valueCompound ->
+      letC (typeVarInfo ty) valueCompound rest
+    ExprResult valueExpr -> do
+      let (valueExprInit, valueExprLast) = splitExpr valueExpr
+      valueExprInit <$> letS (typeVarInfo ty) valueExprLast rest
+
+fromCoreExpr :: (Monad m) => (a -> (Var, Type)) -> Core.Expr a -> AnfBuilderT m FromCoreResult
 fromCoreExpr toVar expr =
   case expr of
-    Core.Simple s ->
-      pure $ Simple (fromCoreSimple toVar s)
-    Core.LetS _ ty value rest ->
-      letS
-        (typeVarInfo ty)
-        (fromCoreSimple toVar value)
-        (\var -> fromCoreExpr (unvar (\() -> var) toVar) $ fromScope rest)
-    Core.LetC _ ty value rest ->
-      letC
-        (typeVarInfo ty)
-        (fromCoreCompound toVar value)
-        (\var -> fromCoreExpr (unvar (\() -> var) toVar) $ fromScope rest)
-
-fromCoreCompound :: (a -> Var) -> Core.Compound a -> Compound
-fromCoreCompound toVar compound =
-  case compound of
-    Core.Add a b ->
-      Binop Add (fromCoreSimple toVar a) (fromCoreSimple toVar b)
-    Core.Subtract a b ->
-      Binop Subtract (fromCoreSimple toVar a) (fromCoreSimple toVar b)
-
-fromCoreSimple :: (a -> Var) -> Core.Simple a -> Simple
-fromCoreSimple toVar simple =
-  case simple of
-    Core.Var var -> Var (toVar var)
-    Core.Literal lit -> Literal lit
+    Core.Var var -> pure . SimpleResult $ Var (fst $ toVar var)
+    Core.Literal lit -> pure . SimpleResult $ Literal lit
+    Core.Add ty a b -> do
+      a' <- fromCoreExpr toVar a
+      ExprResult
+        <$> letResult
+          a'
+          (Core.typeOf (snd . toVar) a)
+          ( \aVar -> do
+              b' <- fromCoreExpr toVar b
+              letResult
+                b'
+                (Core.typeOf (snd . toVar) b)
+                ( \bVar -> do
+                    letC (typeVarInfo ty) (Binop Add (Var aVar) (Var bVar)) (pure . Simple . Var)
+                )
+          )
+    Core.Subtract ty a b -> do
+      a' <- fromCoreExpr toVar a
+      ExprResult
+        <$> letResult
+          a'
+          (Core.typeOf (snd . toVar) a)
+          ( \aVar -> do
+              b' <- fromCoreExpr toVar b
+              letResult
+                b'
+                (Core.typeOf (snd . toVar) b)
+                ( \bVar -> do
+                    letC (typeVarInfo ty) (Binop Subtract (Var aVar) (Var bVar)) (pure . Simple . Var)
+                )
+          )
+    Core.Let ty _ valueTy value rest -> do
+      value' <- fromCoreExpr toVar value
+      case value' of
+        SimpleResult valueSimple ->
+          ExprResult
+            <$> letS
+              (typeVarInfo valueTy)
+              valueSimple
+              (\var -> fromCoreExpr (unvar (\() -> (var, valueTy)) toVar) (fromScope rest) >>= resultToExpr ty)
+        CompoundResult valueCompound ->
+          ExprResult
+            <$> letC
+              (typeVarInfo valueTy)
+              valueCompound
+              (\var -> fromCoreExpr (unvar (\() -> (var, valueTy)) toVar) (fromScope rest) >>= resultToExpr ty)
+        ExprResult valueExpr -> do
+          let (valueExprInit, valueExprLast) = splitExpr valueExpr
+          ExprResult . valueExprInit
+            <$> letS
+              (typeVarInfo valueTy)
+              valueExprLast
+              (\var -> fromCoreExpr (unvar (\() -> (var, valueTy)) toVar) (fromScope rest) >>= resultToExpr ty)

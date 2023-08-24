@@ -14,7 +14,7 @@ import Data.Void (Void, absurd)
 import Metis.AllocateRegisters (allocateRegisters_X86_64)
 import qualified Metis.Anf as Anf
 import Metis.Codegen (printInstructions_X86_64)
-import Metis.Core (Compound (..), Expr (..), Simple (..))
+import Metis.Core (Expr (..))
 import Metis.Isa (Isa (generalPurposeRegisters))
 import Metis.Isa.X86_64 (Register (..), X86_64)
 import qualified Metis.Literal as Literal
@@ -62,8 +62,8 @@ spec =
             let
               lit99 = Literal $ Literal.Uint64 99
              in
-              LetC Nothing Type.Uint64 (Add lit99 lit99) . toScope $
-                Simple (Var $ B ())
+              Let Type.Uint64 Nothing Type.Uint64 (Add Type.Uint64 lit99 lit99) . toScope $
+                Var (B ())
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
             [ "mov $99, %rax"
@@ -76,9 +76,8 @@ spec =
             let
               lit99 = Literal $ Literal.Uint64 99
              in
-              LetS Nothing Type.Uint64 lit99 . toScope $
-                LetC Nothing Type.Uint64 (Add (Var $ B ()) (Var $ B ())) . toScope $
-                  Simple (Var $ B ())
+              Let Type.Uint64 Nothing Type.Uint64 lit99 . toScope $
+                Add Type.Uint64 (Var $ B ()) (Var $ B ())
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
             [ "mov $99, %rax"
@@ -92,10 +91,9 @@ spec =
               lit99 = Literal $ Literal.Uint64 99
               lit100 = Literal $ Literal.Uint64 100
              in
-              LetS Nothing Type.Uint64 lit99 . toScope $
-                LetS Nothing Type.Uint64 lit100 . toScope $
-                  LetC Nothing Type.Uint64 (Add (Var $ F $ B ()) (Var $ B ())) . toScope $
-                    Simple (Var $ B ())
+              Let Type.Uint64 Nothing Type.Uint64 lit99 . toScope $
+                Let Type.Uint64 Nothing Type.Uint64 lit100 . toScope $
+                  Add Type.Uint64 (Var $ F $ B ()) (Var $ B ())
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
             [ "mov $99, %rax"
@@ -111,12 +109,10 @@ spec =
               lit100 = Literal $ Literal.Uint64 100
               lit101 = Literal $ Literal.Uint64 101
              in
-              LetS Nothing Type.Uint64 lit99 . toScope $
-                LetS Nothing Type.Uint64 lit100 . toScope $
-                  LetS Nothing Type.Uint64 lit101 . toScope $
-                    LetC Nothing Type.Uint64 (Add (Var $ F $ F $ B ()) (Var $ F $ B ())) . toScope $
-                      LetC Nothing Type.Uint64 (Add (Var $ B ()) (Var $ F $ B ())) . toScope $
-                        Simple (Var $ B ())
+              Let Type.Uint64 Nothing Type.Uint64 lit99 . toScope $
+                Let Type.Uint64 Nothing Type.Uint64 lit100 . toScope $
+                  Let Type.Uint64 Nothing Type.Uint64 lit101 . toScope $
+                    Add Type.Uint64 (Add Type.Uint64 (Var . F . F $ B ()) (Var . F $ B ())) (Var $ B ())
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
             [ "mov $99, %rax"
@@ -134,12 +130,10 @@ spec =
               lit100 = Literal $ Literal.Uint64 100
               lit101 = Literal $ Literal.Uint64 101
              in
-              LetS Nothing Type.Uint64 lit99 . toScope $
-                LetS Nothing Type.Uint64 lit100 . toScope $
-                  LetS Nothing Type.Uint64 lit101 . toScope $
-                    LetC Nothing Type.Uint64 (Add (Var $ F $ F $ B ()) (Var $ F $ B ())) . toScope $
-                      LetC Nothing Type.Uint64 (Add (Var $ B ()) (Var $ F $ B ())) . toScope $
-                        Simple (Var $ B ())
+              Let Type.Uint64 Nothing Type.Uint64 lit99 . toScope $
+                Let Type.Uint64 Nothing Type.Uint64 lit100 . toScope $
+                  Let Type.Uint64 Nothing Type.Uint64 lit101 . toScope $
+                    Add Type.Uint64 (Add Type.Uint64 (Var . F . F $ B ()) (Var . F $ B ())) (Var $ B ())
         , availableRegisters = [Rax]
         , expectedOutput =
             [ "mov $99, %rax"

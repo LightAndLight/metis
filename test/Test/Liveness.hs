@@ -6,7 +6,7 @@ import Bound.Scope.Simple (toScope)
 import Bound.Var (Var (..))
 import Data.Void (absurd)
 import qualified Metis.Anf as Anf
-import Metis.Core (Compound (..), Expr (..), Simple (..))
+import Metis.Core (Expr (..))
 import qualified Metis.Literal as Literal
 import Metis.Liveness (Liveness (..))
 import qualified Metis.Liveness as Liveness
@@ -22,9 +22,8 @@ spec =
           let
             lit99 = Literal $ Literal.Uint64 99
            in
-            LetS Nothing Type.Uint64 lit99 . toScope $
-              LetC Nothing Type.Uint64 (Add (Var $ B ()) (Var $ B ())) . toScope $
-                Simple (Var $ B ())
+            Let Type.Uint64 Nothing Type.Uint64 lit99 . toScope $
+              Add Type.Uint64 (Var $ B ()) (Var $ B ())
       let anf = Anf.fromCore absurd expr
       let liveness = Liveness.liveness anf
 

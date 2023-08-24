@@ -2,27 +2,28 @@
 
 module Metis.Core (
   Expr (..),
-  Compound (..),
-  Simple (..),
+  typeOf,
 ) where
 
 import Bound.Scope.Simple (Scope)
 import Data.Text (Text)
 import Metis.Literal (Literal)
+import qualified Metis.Literal as Literal
 import Metis.Type (Type)
 
-data Simple a
+data Expr a
   = Var a
   | Literal Literal
+  | Add Type (Expr a) (Expr a)
+  | Subtract Type (Expr a) (Expr a)
+  | Let Type (Maybe Text) Type (Expr a) (Scope () Expr a)
   deriving (Functor, Foldable, Traversable)
 
-data Compound a
-  = Add (Simple a) (Simple a)
-  | Subtract (Simple a) (Simple a)
-  deriving (Functor, Foldable, Traversable)
-
-data Expr a
-  = Simple (Simple a)
-  | LetS (Maybe Text) Type (Simple a) (Scope () Expr a)
-  | LetC (Maybe Text) Type (Compound a) (Scope () Expr a)
-  deriving (Functor, Foldable, Traversable)
+typeOf :: (a -> Type) -> Expr a -> Type
+typeOf varTy expr =
+  case expr of
+    Var var -> varTy var
+    Literal lit -> Literal.typeOf lit
+    Add ty _ _ -> ty
+    Subtract ty _ _ -> ty
+    Let ty _ _ _ _ -> ty
