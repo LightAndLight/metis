@@ -14,26 +14,27 @@ module Metis.AllocateRegisters (
   AllocateRegistersState (..),
   initialAllocateRegistersState,
   allocateRegistersExpr_X86_64,
-  allocateRegistersCompound_X86_64,
+  -- allocateRegistersCompound_X86_64,
 ) where
 
 import Control.Monad.State.Class (MonadState, gets, modify)
 import Control.Monad.State.Strict (evalStateT)
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
+import qualified Data.HashSet as HashSet
 import Data.Int (Int64)
 import qualified Data.Maybe as Maybe
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
-import qualified Data.Text as Text
 import Data.Word (Word64)
 import GHC.Stack (HasCallStack)
 import qualified Metis.Anf as Anf
-import Metis.Isa (Add, Instruction, Isa, Memory (..), Register, Sub, add, imm, mov, pop, push, sub)
+import Metis.Isa (Add, Instruction, Memory (..), Register, Sub, add, imm, mov, pop, push, sub)
 import Metis.Isa.X86_64 (Register (..), X86_64)
+import Metis.Literal (Literal)
 import qualified Metis.Literal as Literal
+import Metis.Liveness (Liveness (..))
 import Metis.Log (MonadLog)
-import qualified Metis.Log as Log
 import qualified Metis.Type as Type
 
 data Location isa
@@ -46,175 +47,29 @@ data AllocateRegistersState isa = AllocateRegistersState
   { nextStackOffset :: Int64
   , available :: Seq (Register isa)
   , locations :: HashMap Anf.Var (Location isa)
+  , liveness :: HashMap Anf.Var Liveness
   }
 
-initialAllocateRegistersState :: Seq (Register isa) -> AllocateRegistersState isa
-initialAllocateRegistersState available =
+initialAllocateRegistersState ::
+  Seq (Register isa) ->
+  HashMap Anf.Var Liveness ->
+  AllocateRegistersState isa
+initialAllocateRegistersState available liveness =
   AllocateRegistersState
     { nextStackOffset = 0
     , available
     , locations = mempty
+    , liveness
     }
 
-allocateRegisters_X86_64 ::
-  (MonadLog m) =>
-  Seq (Register X86_64) ->
-  Anf.Expr ->
-  m ([Instruction X86_64], Location X86_64)
-allocateRegisters_X86_64 available expr =
-  evalStateT
-    (allocateRegistersExpr_X86_64 mempty expr)
-    (initialAllocateRegistersState available)
+lookupLocation :: (HasCallStack) => (MonadState (AllocateRegistersState isa) m) => Anf.Var -> m (Location isa)
+lookupLocation var = gets (Maybe.fromMaybe (error $ show var <> "missing from location map") . HashMap.lookup var . (.locations))
 
-allocateRegistersExpr_X86_64 ::
-  (MonadState (AllocateRegistersState X86_64) m, MonadLog m) =>
-  HashMap Anf.Var Word64 ->
-  Anf.Expr ->
-  m ([Instruction X86_64], Location X86_64)
-allocateRegistersExpr_X86_64 varSizes expr =
-  case expr of
-    Anf.Simple s ->
-      case s of
-        Anf.Var var -> do
-          location <- autoAssignVar varSizes var
-          pure ([], location)
-        Anf.Literal lit -> do
-          location <- allocLocation (Type.sizeOf $ Literal.typeOf lit)
-          let insts = case location of
-                Stack offset ->
-                  [mov (imm lit) Mem{base = Rbp, offset}]
-                Register register ->
-                  [mov (imm lit) register]
-          freeLocation location
-          pure (insts, location)
-    Anf.LetS var varInfo value rest -> do
-      (rest', a) <- allocateRegistersExpr_X86_64 (HashMap.insert var varInfo.size varSizes) rest
-      mLocation <- varLocation var
-      case mLocation of
-        Nothing ->
-          pure (rest', a)
-        Just location -> do
-          modify (\s -> s{locations = HashMap.delete var s.locations})
-          value' <- allocateRegistersSimple_X86_64 location value
-          pure (value' <> rest', a)
-    Anf.LetC var varInfo value rest -> do
-      (rest', a) <- allocateRegistersExpr_X86_64 (HashMap.insert var varInfo.size varSizes) rest
-      mLocation <- varLocation var
-      case mLocation of
-        Nothing ->
-          pure (rest', a)
-        Just location -> do
-          modify (\s -> s{locations = HashMap.delete var s.locations})
-          value' <- allocateRegistersCompound_X86_64 varSizes location value
-          pure (value' <> rest', a)
+lookupLiveness :: (HasCallStack) => (MonadState (AllocateRegistersState isa) m) => Anf.Var -> m Liveness
+lookupLiveness var = gets (Maybe.fromMaybe (error $ show var <> "missing from liveness map") . HashMap.lookup var . (.liveness))
 
-allocateRegistersSimple_X86_64 ::
-  (MonadState (AllocateRegistersState X86_64) m) =>
-  Location X86_64 ->
-  Anf.Simple ->
-  m [Instruction X86_64]
-allocateRegistersSimple_X86_64 destination simple =
-  case simple of
-    Anf.Var var ->
-      [] <$ assignVar var destination
-    Anf.Literal lit -> do
-      let insts = case destination of
-            Stack offset ->
-              [mov (imm lit) Mem{base = Rbp, offset}]
-            Register register ->
-              [mov (imm lit) register]
-      freeLocation destination
-      pure insts
-
-allocateRegistersCompound_X86_64 ::
-  (MonadState (AllocateRegistersState X86_64) m, MonadLog m) =>
-  HashMap Anf.Var Word64 ->
-  Location X86_64 ->
-  Anf.Compound ->
-  m [Instruction X86_64]
-allocateRegistersCompound_X86_64 varSizes destination compound = do
-  case compound of
-    Anf.Binop op a b -> do
-      Log.trace . Text.pack $ show (destination, a, b)
-
-      available <- gets (.available)
-      Log.trace . Text.pack $ "available registers: " <> show available
-
-      let
-        op' :: (Add X86_64 a b, Sub X86_64 a b) => a -> b -> Instruction X86_64
-        op' =
-          case op of
-            Anf.Add -> add
-            Anf.Subtract -> sub
-
-      case (destination, a, b) of
-        (Stack offset, Anf.Literal litA, Anf.Literal litB) -> do
-          let destination' = Mem{base = Rbp, offset}
-          pure [mov (imm litB) destination', op' (imm litA) destination']
-        (Stack offset, Anf.Var varA, Anf.Literal litB) -> do
-          let destination' = Mem{base = Rbp, offset}
-          locationA <- autoAssignVar varSizes varA
-          case locationA of
-            Stack offsetA -> do
-              pure
-                [ mov (imm litB) destination'
-                , push Rax
-                , mov Mem{base = Rbp, offset = offsetA} Rax
-                , op' Rax destination'
-                , pop Rax
-                ]
-            Register registerA ->
-              pure [mov (imm litB) destination', op' registerA destination']
-        (Stack offset, Anf.Literal litA, Anf.Var varB) -> do
-          let destination' = Mem{base = Rbp, offset}
-          assignVar varB destination
-          pure [op' (imm litA) destination']
-        (Stack offset, Anf.Var varA, Anf.Var varB) -> do
-          let destination' = Mem{base = Rbp, offset}
-          assignVar varB destination
-          locationA <- autoAssignVar varSizes varA
-          case locationA of
-            Stack offsetA ->
-              pure
-                [ push Rax
-                , mov Mem{base = Rbp, offset = offsetA} Rax
-                , op' Rax destination'
-                , pop Rax
-                ]
-            Register registerA ->
-              pure [op' registerA destination']
-        (Register destination', Anf.Literal litA, Anf.Literal litB) ->
-          pure [mov (imm litB) destination', op' (imm litA) destination']
-        (Register destination', Anf.Var varA, Anf.Literal litB) -> do
-          locationA <- autoAssignVar varSizes varA
-          case locationA of
-            Stack offset' -> do
-              let locationA' = Mem{base = Rbp, offset = offset'}
-              pure [mov (imm litB) destination', op' locationA' destination']
-            Register locationA' ->
-              pure [mov (imm litB) destination', op' locationA' destination']
-        (Register destination', Anf.Literal litA, Anf.Var varB) -> do
-          assignVar varB destination
-          pure [op' (imm litA) destination']
-        (Register destination', Anf.Var varA, Anf.Var varB) -> do
-          assignVar varB destination
-          locationA <- autoAssignVar varSizes varA
-          case locationA of
-            Stack offset -> do
-              let locationA' = Mem{base = Rbp, offset}
-              pure [op' locationA' destination']
-            Register locationA' ->
-              pure [op' locationA' destination']
-
-assignVar ::
-  forall isa m.
-  (HasCallStack) =>
-  (MonadState (AllocateRegistersState isa) m, Isa isa) =>
-  Anf.Var ->
-  Location isa ->
-  m ()
-assignVar var location =
-  modify (\s -> (s :: AllocateRegistersState isa){locations = HashMap.insert var location s.locations})
+lookupSize :: (HasCallStack) => Anf.Var -> HashMap Anf.Var Word64 -> Word64
+lookupSize var varSizes = Maybe.fromMaybe (error $ show var <> " missing from sizes map") $ HashMap.lookup var varSizes
 
 allocLocation ::
   (MonadState (AllocateRegistersState isa) m) =>
@@ -232,34 +87,211 @@ allocLocation size = do
       modify (\s -> s{available = available'})
       pure $ Register register
 
-freeLocation ::
-  (MonadState (AllocateRegistersState isa) m) =>
-  Location isa ->
-  m ()
-freeLocation location =
+allocateRegisters_X86_64 ::
+  (MonadLog m) =>
+  Seq (Register X86_64) ->
+  Anf.Expr ->
+  HashMap Anf.Var Liveness ->
+  m ([Instruction X86_64], Location X86_64)
+allocateRegisters_X86_64 available expr liveness =
+  evalStateT
+    (allocateRegistersExpr_X86_64 mempty expr)
+    (initialAllocateRegistersState available liveness)
+
+allocateRegistersLiteral_X86_64 ::
+  (MonadState (AllocateRegistersState X86_64) m, MonadLog m) =>
+  Literal ->
+  m ([Instruction X86_64], Location X86_64)
+allocateRegistersLiteral_X86_64 lit = do
+  location <- allocLocation (Type.sizeOf $ Literal.typeOf lit)
   case location of
-    Stack{} -> pure ()
+    Stack offset ->
+      pure ([mov (imm lit) Mem{base = Rbp, offset}], location)
     Register register ->
-      modify (\s -> s{available = s.available Seq.|> register})
+      pure ([mov (imm lit) register], location)
 
-autoAssignVar ::
-  (HasCallStack) =>
-  (MonadState (AllocateRegistersState isa) m, Isa isa) =>
+allocateRegistersSimple_X86_64 ::
+  (MonadState (AllocateRegistersState X86_64) m, MonadLog m) =>
+  Anf.Simple ->
+  m ([Instruction X86_64], Location X86_64)
+allocateRegistersSimple_X86_64 simple =
+  case simple of
+    Anf.Var var -> do
+      location <- lookupLocation var
+      pure ([], location)
+    Anf.Literal lit ->
+      allocateRegistersLiteral_X86_64 lit
+
+freeDeadBefore :: (MonadState (AllocateRegistersState isa) m) => Anf.Var -> m ()
+freeDeadBefore var = do
+  liveness <- lookupLiveness var
+  modify
+    ( \s ->
+        let (locations', freed) =
+              ( HashMap.filterWithKey (\k _ -> k `HashSet.member` liveness.before) s.locations
+              , HashMap.foldrWithKey' (\k v acc -> if not (k `HashSet.member` liveness.before) then v : acc else acc) [] s.locations
+              )
+         in s
+              { locations = locations'
+              , available =
+                  foldr
+                    ( \location acc ->
+                        case location of
+                          Register register -> register Seq.<| acc
+                          _ -> acc
+                    )
+                    s.available
+                    freed
+              }
+    )
+
+allocateRegistersExpr_X86_64 ::
+  (MonadState (AllocateRegistersState X86_64) m, MonadLog m) =>
   HashMap Anf.Var Word64 ->
-  Anf.Var ->
-  m (Location isa)
-autoAssignVar varSizes var = do
-  mLocation <- gets (HashMap.lookup var . (.locations))
-  case mLocation of
-    Nothing -> do
-      location <- allocLocation (Maybe.fromMaybe (error $ show var <> " missing from varSizes") $ HashMap.lookup var varSizes)
-      assignVar var location
-      pure location
-    Just location ->
-      pure location
+  Anf.Expr ->
+  m ([Instruction X86_64], Location X86_64)
+allocateRegistersExpr_X86_64 varSizes expr =
+  case expr of
+    Anf.Simple simple ->
+      allocateRegistersSimple_X86_64 simple
+    Anf.LetS var varInfo value rest -> do
+      freeDeadBefore var
 
-varLocation ::
-  (MonadState (AllocateRegistersState isa) m) =>
-  Anf.Var ->
-  m (Maybe (Location isa))
-varLocation var = gets (HashMap.lookup var . (.locations))
+      value' <- do
+        (insts, location) <- case value of
+          Anf.Var var' -> do
+            location <- lookupLocation var'
+            pure ([], location)
+          Anf.Literal lit -> do
+            location <- allocLocation varInfo.size
+            case location of
+              Stack offset ->
+                pure ([mov (imm lit) Mem{base = Rbp, offset}], location)
+              Register register ->
+                pure ([mov (imm lit) register], location)
+        modify (\s -> s{locations = HashMap.insert var location s.locations})
+        pure insts
+
+      (rest', location) <- allocateRegistersExpr_X86_64 varSizes rest
+
+      pure (value' <> rest', location)
+    Anf.LetC var _varInfo value rest -> do
+      freeDeadBefore var
+
+      value' <-
+        case value of
+          Anf.Binop op a b -> do
+            let op' :: (Add X86_64 a b, Sub X86_64 a b) => a -> b -> Instruction X86_64
+                op' =
+                  case op of
+                    Anf.Add -> add
+                    Anf.Subtract -> sub
+
+            (bInsts, bLocation) <-
+              case b of
+                Anf.Literal lit ->
+                  allocateRegistersLiteral_X86_64 lit
+                Anf.Var bVar -> do
+                  bLocation <- lookupLocation bVar
+                  liveness <- lookupLiveness bVar
+                  insts <-
+                    if bVar `HashSet.member` liveness.after
+                      then do
+                        {-
+                        After this instruction, `bVar`'s location is "owned" by `var`.
+                        `bVar` is used after this instruction, which means `bVar`'s location needs to
+                        be preserved.
+
+                        Example:
+
+                        (2 + 1) + ((2 + 1) + 1)
+                        = 3 + 3 + 1
+                        = 7
+
+                        ```
+                        %0 = 1
+                        %1 = add(2, %0)
+                        %2 = add(%1, %0)
+                        ```
+
+                        Incorrect assignment:
+
+                        (2 + 1) + ((2 + 1) + (2 + 1))
+                        = 3 + 3 + 3
+                        = 9
+
+                        ```
+                        mov $1, %rax
+                        add $2, %rax
+                        add %rax, %rax
+                        ```
+
+                        Correct assignment:
+
+                        (2 + 1) + ((2 + 1) + 1)
+                        = 3 + 3 + 1
+                        = 7
+
+                        ```
+                        mov $1, %rax
+                        mov %rax, %rbx
+                        add $2, %rax
+                        add %rax, %rbx
+                        ```
+                        -}
+                        bLocation' <- allocLocation (lookupSize bVar varSizes)
+                        modify (\s -> s{locations = HashMap.insert bVar bLocation' s.locations})
+                        case (bLocation, bLocation') of
+                          (Register bRegister, Register bRegister') ->
+                            pure [mov bRegister bRegister']
+                          (Register bRegister, Stack bOffset') ->
+                            pure [mov bRegister Mem{base = Rbp, offset = bOffset'}]
+                          (Stack bOffset, Register bRegister') ->
+                            pure [mov Mem{base = Rbp, offset = bOffset} bRegister']
+                          (Stack bOffset, Stack bOffset') ->
+                            pure
+                              [ push Rax
+                              , mov Mem{base = Rbp, offset = bOffset} Rax
+                              , mov Rax Mem{base = Rbp, offset = bOffset'}
+                              , pop Rax
+                              ]
+                      else do
+                        {- `bVar` is not used after this instruction, so its location can permanently
+                        passed to `var`.
+                        -}
+                        pure []
+                  pure (insts, bLocation)
+
+            insts <-
+              case a of
+                Anf.Literal lit ->
+                  case bLocation of
+                    Stack bOffset ->
+                      pure $ bInsts <> [op' (imm lit) Mem{base = Rbp, offset = bOffset}]
+                    Register bRegister ->
+                      pure $ bInsts <> [op' (imm lit) bRegister]
+                Anf.Var aVar -> do
+                  aLocation <- lookupLocation aVar
+                  case (aLocation, bLocation) of
+                    (Register aRegister, Register bRegister) ->
+                      pure $ bInsts <> [op' aRegister bRegister]
+                    (Register aRegister, Stack bOffset) ->
+                      pure $ bInsts <> [op' aRegister Mem{base = Rbp, offset = bOffset}]
+                    (Stack aOffset, Register bRegister) -> do
+                      pure $ bInsts <> [op' Mem{base = Rbp, offset = aOffset} bRegister]
+                    (Stack aOffset, Stack bOffset) ->
+                      pure $
+                        bInsts
+                          <> [ push Rax
+                             , mov Mem{base = Rbp, offset = aOffset} Rax
+                             , op' Rax Mem{base = Rbp, offset = bOffset}
+                             , pop Rax
+                             ]
+
+            modify (\s -> s{locations = HashMap.insert var bLocation s.locations})
+
+            pure insts
+
+      (rest', location) <- allocateRegistersExpr_X86_64 varSizes rest
+
+      pure (value' <> rest', location)
