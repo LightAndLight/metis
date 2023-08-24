@@ -267,30 +267,29 @@ allocateRegistersExpr_X86_64 varSizes expr =
                 Anf.Literal lit ->
                   case bLocation of
                     Stack bOffset ->
-                      pure $ bInsts <> [op' (imm lit) Mem{base = Rbp, offset = bOffset}]
+                      pure [op' (imm lit) Mem{base = Rbp, offset = bOffset}]
                     Register bRegister ->
-                      pure $ bInsts <> [op' (imm lit) bRegister]
+                      pure [op' (imm lit) bRegister]
                 Anf.Var aVar -> do
                   aLocation <- lookupLocation aVar
                   case (aLocation, bLocation) of
                     (Register aRegister, Register bRegister) ->
-                      pure $ bInsts <> [op' aRegister bRegister]
+                      pure [op' aRegister bRegister]
                     (Register aRegister, Stack bOffset) ->
-                      pure $ bInsts <> [op' aRegister Mem{base = Rbp, offset = bOffset}]
+                      pure [op' aRegister Mem{base = Rbp, offset = bOffset}]
                     (Stack aOffset, Register bRegister) -> do
-                      pure $ bInsts <> [op' Mem{base = Rbp, offset = aOffset} bRegister]
+                      pure [op' Mem{base = Rbp, offset = aOffset} bRegister]
                     (Stack aOffset, Stack bOffset) ->
-                      pure $
-                        bInsts
-                          <> [ push Rax
-                             , mov Mem{base = Rbp, offset = aOffset} Rax
-                             , op' Rax Mem{base = Rbp, offset = bOffset}
-                             , pop Rax
-                             ]
+                      pure
+                        [ push Rax
+                        , mov Mem{base = Rbp, offset = aOffset} Rax
+                        , op' Rax Mem{base = Rbp, offset = bOffset}
+                        , pop Rax
+                        ]
 
             modify (\s -> s{locations = HashMap.insert var bLocation s.locations})
 
-            pure insts
+            pure $ bInsts <> insts
 
       (rest', location) <- allocateRegistersExpr_X86_64 varSizes rest
 
