@@ -11,6 +11,7 @@ module Metis.Isa (
   Symbol (..),
 
   -- * Common instructions
+  Op2 (..),
   Add (..),
   Call (..),
   Lea (..),
@@ -53,11 +54,14 @@ data Memory isa = Mem {base :: Register isa, offset :: Int64}
 
 newtype Symbol = Symbol {value :: Text}
 
-class Add isa a b where add :: a -> b -> Instruction isa
 class Call isa a where call :: a -> Instruction isa
-class Lea isa a b where lea :: a -> b -> Instruction isa
-class Mov isa a b where mov :: a -> b -> Instruction isa
 class Pop isa a where pop :: a -> Instruction isa
 class Push isa a where push :: a -> Instruction isa
-class Sub isa a b where sub :: a -> b -> Instruction isa
-class Xor isa a b where xor :: a -> b -> Instruction isa
+
+data Op2 src dest = Op2 {src :: src, dest :: dest}
+
+class Add isa src dest where add :: Op2 src dest -> Instruction isa
+class Lea isa src dest where lea :: Op2 src dest -> Instruction isa
+class Mov isa src dest where mov :: Op2 src dest -> Instruction isa
+class Sub isa src dest where sub :: Op2 src dest -> Instruction isa
+class Xor isa src dest where xor :: Op2 src dest -> Instruction isa

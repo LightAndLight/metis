@@ -13,6 +13,7 @@ import Metis.Isa (
   Lea (..),
   Memory,
   Mov (..),
+  Op2,
   Pop (..),
   Push (..),
   Sub (..),
@@ -45,14 +46,14 @@ instance Isa X86_64 where
   data Instruction X86_64
     = Push_r (Register X86_64)
     | Pop_r (Register X86_64)
-    | Inst2_ir Inst2 Immediate (Register X86_64)
-    | Inst2_im Inst2 Immediate (Memory X86_64)
-    | Inst2_rr Inst2 (Register X86_64) (Register X86_64)
-    | Inst2_rm Inst2 (Register X86_64) (Memory X86_64)
-    | Inst2_mr Inst2 (Memory X86_64) (Register X86_64)
-    | Lea_mr (Memory X86_64) (Register X86_64)
-    | Lea_sr Symbol (Register X86_64)
     | Call_s Symbol
+    | Inst2_ir Inst2 (Op2 Immediate (Register X86_64))
+    | Inst2_im Inst2 (Op2 Immediate (Memory X86_64))
+    | Inst2_rr Inst2 (Op2 (Register X86_64) (Register X86_64))
+    | Inst2_rm Inst2 (Op2 (Register X86_64) (Memory X86_64))
+    | Inst2_mr Inst2 (Op2 (Memory X86_64) (Register X86_64))
+    | Lea_mr (Op2 (Memory X86_64) (Register X86_64))
+    | Lea_sr (Op2 Symbol (Register X86_64))
 
   registerName reg =
     case reg of

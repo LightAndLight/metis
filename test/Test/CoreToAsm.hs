@@ -1,3 +1,4 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -5,6 +6,7 @@ module Test.CoreToAsm (spec) where
 
 import Bound.Scope.Simple (toScope)
 import Bound.Var (Var (..))
+import Data.CallStack (HasCallStack)
 import Data.Foldable (traverse_)
 import Data.Sequence (Seq)
 import qualified Data.Text.Lazy as Text.Lazy
@@ -25,12 +27,17 @@ import System.Exit (ExitCode (..))
 import qualified System.Process as Process
 import Test.Hspec (Spec, SpecWith, describe, expectationFailure, it, shouldBe)
 
-data TestCase = TestCase
-  { title :: String
-  , expr :: Expr Void
-  , availableRegisters :: Seq (Register X86_64)
-  , expectedOutput :: [Builder]
-  }
+data TestCase where
+  TestCase ::
+    -- This call stack makes `hspec` report the call site of the `TestCase` on failure,
+    -- instead of the location in `testCase` where the failure happened.
+    (HasCallStack) =>
+    { title :: String
+    , expr :: Expr Void
+    , availableRegisters :: Seq (Register X86_64)
+    , expectedOutput :: [Builder]
+    } ->
+    TestCase
 
 testCase :: TestCase -> SpecWith ()
 testCase TestCase{title, expr, availableRegisters, expectedOutput} =
@@ -98,7 +105,7 @@ spec =
         , expectedOutput =
             [ "mov $99, %rax"
             , "mov $100, %rbx"
-            , "add %rax, %rbx"
+            , "add %rbx, %rax"
             ]
         }
     , TestCase
@@ -118,8 +125,8 @@ spec =
             [ "mov $99, %rax"
             , "mov $100, %rbx"
             , "mov $101, %rcx"
-            , "add %rax, %rbx"
-            , "add %rbx, %rcx"
+            , "add %rbx, %rax"
+            , "add %rcx, %rax"
             ]
         }
     , TestCase
@@ -139,11 +146,8 @@ spec =
             [ "mov $99, %rax"
             , "mov $100, 0(%rbp)"
             , "mov $101, -8(%rbp)"
-            , "add %rax, 0(%rbp)"
-            , "push %rax"
-            , "mov 0(%rbp), %rax"
-            , "add %rax, -8(%rbp)"
-            , "pop %rax"
+            , "add 0(%rbp), %rax"
+            , "add -8(%rbp), %rax"
             ]
         }
     ]

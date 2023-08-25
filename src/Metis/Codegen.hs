@@ -10,7 +10,7 @@ module Metis.Codegen (printInstruction_X86_64, printInstructions_X86_64) where
 
 import Data.Text.Lazy.Builder (Builder)
 import qualified Data.Text.Lazy.Builder as Builder
-import Metis.Isa (Immediate (..), Isa (..), Memory (..), Symbol (..))
+import Metis.Isa (Immediate (..), Isa (..), Memory (..), Op2 (..), Symbol (..))
 import Metis.Isa.X86_64 (Inst2 (..), Instruction (..), X86_64)
 
 printRegister :: (Isa isa) => Register isa -> Builder
@@ -37,20 +37,21 @@ printInstruction_X86_64 inst =
       "pop " <> printRegister reg
     Call_s sym ->
       "call " <> printSymbol sym
-    Inst2_ir inst2 imm reg ->
-      printInst2 inst2 <> " " <> printImmediate imm <> ", " <> printRegister reg
-    Inst2_im inst2 imm mem ->
-      printInst2 inst2 <> " " <> printImmediate imm <> ", " <> printMemory mem
-    Inst2_rr inst2 reg1 reg2 ->
-      printInst2 inst2 <> " " <> printRegister reg1 <> ", " <> printRegister reg2
-    Inst2_rm inst2 reg mem ->
-      printInst2 inst2 <> " " <> printRegister reg <> ", " <> printMemory mem
-    Inst2_mr inst2 mem reg ->
-      printInst2 inst2 <> " " <> printMemory mem <> ", " <> printRegister reg
-    Lea_mr mem reg ->
-      "lea " <> printMemory mem <> ", " <> printRegister reg
-    Lea_sr sym reg ->
-      "lea " <> printSymbol sym <> ", " <> printRegister reg
+    Inst2_ir inst2 op2 ->
+      -- AT&T syntax
+      printInst2 inst2 <> " " <> printImmediate op2.src <> ", " <> printRegister op2.dest
+    Inst2_im inst2 op2 ->
+      printInst2 inst2 <> " " <> printImmediate op2.src <> ", " <> printMemory op2.dest
+    Inst2_rr inst2 op2 ->
+      printInst2 inst2 <> " " <> printRegister op2.src <> ", " <> printRegister op2.dest
+    Inst2_rm inst2 op2 ->
+      printInst2 inst2 <> " " <> printRegister op2.src <> ", " <> printMemory op2.dest
+    Inst2_mr inst2 op2 ->
+      printInst2 inst2 <> " " <> printMemory op2.src <> ", " <> printRegister op2.dest
+    Lea_mr op2 ->
+      "lea " <> printMemory op2.src <> ", " <> printRegister op2.dest
+    Lea_sr op2 ->
+      "lea " <> printSymbol op2.src <> ", " <> printRegister op2.dest
   where
     printInst2 :: Inst2 -> Builder
     printInst2 inst2 =

@@ -27,7 +27,7 @@ import qualified Metis.Anf as Anf
 import qualified Metis.Asm as Asm
 import Metis.Codegen (printInstruction_X86_64)
 import qualified Metis.Core as Core
-import Metis.Isa (Memory (..), Symbol (..), call, generalPurposeRegisters, imm, lea, mov, xor)
+import Metis.Isa (Memory (..), Op2 (..), Symbol (..), call, generalPurposeRegisters, imm, lea, mov, xor)
 import Metis.Isa.X86_64 (Register (..), X86_64)
 import qualified Metis.Liveness as Liveness
 import Metis.Log (noLogging)
@@ -143,17 +143,17 @@ compile buildDir expr outPath = do
   (asm, resultLocation) <- noLogging $ allocateRegisters_X86_64 (generalPurposeRegisters @X86_64) anf liveness
   asmText <-
     fmap (Asm.printAsm printInstruction_X86_64) . Asm.runAsmBuilderT $ do
-      formatString <- Asm.string "%d\n"
+      formatString <- Asm.string "%u\n"
       _ <-
         Asm.block "main" [Asm.Global] $
           asm
-            <> [ lea formatString Rdi
+            <> [ lea Op2{src = formatString, dest = Rdi}
                , case resultLocation of
-                  Register register -> mov register Rsi
-                  Stack offset -> mov Mem{base = Rbp, offset} Rsi
-               , xor Rax Rax
+                  Register register -> mov Op2{src = register, dest = Rsi}
+                  Stack offset -> mov Op2{src = Mem{base = Rbp, offset}, dest = Rsi}
+               , xor Op2{src = Rax, dest = Rax}
                , call (Symbol "printf")
-               , mov (imm (0 :: Word64)) Rdi
+               , mov Op2{src = imm (0 :: Word64), dest = Rdi}
                , call (Symbol "exit")
                ]
       pure ()
