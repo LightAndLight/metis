@@ -25,16 +25,18 @@ common warnings
 library
     import:           warnings
     exposed-modules:  
-        Metis.Core
-        Metis.Codegen
         Metis.AllocateRegisters
+        Metis.Anf
+        Metis.Asm
+        Metis.Codegen
+        Metis.Compile
+        Metis.Core
         Metis.Isa
         Metis.Isa.X86_64
         Metis.Literal
-        Metis.Anf
-        Metis.Type
-        Metis.Log
         Metis.Liveness
+        Metis.Log
+        Metis.Type
     -- other-modules:
     -- other-extensions:
     build-depends:    
@@ -42,9 +44,12 @@ library
         bound,
         containers,
         deriving-compat,
+        directory,
+        filepath,
         hashable,
         lens,
         mtl,
+        process,
         sage,
         text >=2.0,
         transformers,
@@ -69,6 +74,7 @@ test-suite metis-test
     default-language: Haskell2010
     other-modules:
         Test.Anf
+        Test.Compile
         Test.CoreToAsm
         Test.Liveness
     -- other-extensions:
@@ -77,9 +83,17 @@ test-suite metis-test
     main-is:          Main.hs
     build-depends:
         base >=4.17.0.0,
-        metis,
-        hspec,
         bound,
-        text,
+        containers,
+        directory,
+        filepath,
+        hspec,
+        metis,
         process,
-        containers
+        temporary,
+        text,
+
+        -- better test failure behaviours 
+        call-stack,
+        hspec-core,
+        HUnit

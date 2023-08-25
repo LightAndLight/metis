@@ -15,6 +15,9 @@
             (haskell-language-server.override { supportedGhcVersions = [ ghcVersion ]; })
             haskellPackages.fourmolu
           ];
+
+          # TODO: make this better. It's a `metis` implementation detail.
+          LIBC_LIB_PATH = pkgs.stdenv.cc.libc;
         };
       }
     );

@@ -7,13 +7,17 @@ module Metis.Isa.X86_64 (X86_64, Register (..), Instruction (..), Inst2 (..)) wh
 
 import Metis.Isa (
   Add (..),
+  Call (..),
   Immediate,
   Isa (..),
+  Lea (..),
   Memory,
   Mov (..),
   Pop (..),
   Push (..),
   Sub (..),
+  Symbol (..),
+  Xor (..),
  )
 
 data X86_64
@@ -46,6 +50,9 @@ instance Isa X86_64 where
     | Inst2_rr Inst2 (Register X86_64) (Register X86_64)
     | Inst2_rm Inst2 (Register X86_64) (Memory X86_64)
     | Inst2_mr Inst2 (Memory X86_64) (Register X86_64)
+    | Lea_mr (Memory X86_64) (Register X86_64)
+    | Lea_sr Symbol (Register X86_64)
+    | Call_s Symbol
 
   registerName reg =
     case reg of
@@ -87,6 +94,7 @@ data Inst2
   = Mov
   | Add
   | Sub
+  | Xor
 
 instance Mov X86_64 Immediate (Register X86_64) where mov = Inst2_ir Mov
 instance Mov X86_64 Immediate (Memory X86_64) where mov = Inst2_im Mov
@@ -106,6 +114,17 @@ instance Sub X86_64 (Register X86_64) (Register X86_64) where sub = Inst2_rr Sub
 instance Sub X86_64 (Register X86_64) (Memory X86_64) where sub = Inst2_rm Sub
 instance Sub X86_64 (Memory X86_64) (Register X86_64) where sub = Inst2_mr Sub
 
+instance Xor X86_64 Immediate (Register X86_64) where xor = Inst2_ir Xor
+instance Xor X86_64 Immediate (Memory X86_64) where xor = Inst2_im Xor
+instance Xor X86_64 (Register X86_64) (Register X86_64) where xor = Inst2_rr Xor
+instance Xor X86_64 (Register X86_64) (Memory X86_64) where xor = Inst2_rm Xor
+instance Xor X86_64 (Memory X86_64) (Register X86_64) where xor = Inst2_mr Xor
+
+instance Lea X86_64 (Memory X86_64) (Register X86_64) where lea = Lea_mr
+instance Lea X86_64 Symbol (Register X86_64) where lea = Lea_sr
+
 instance Push X86_64 (Register X86_64) where push = Push_r
 
 instance Pop X86_64 (Register X86_64) where pop = Pop_r
+
+instance Call X86_64 Symbol where call = Call_s
