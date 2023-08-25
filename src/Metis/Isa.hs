@@ -40,13 +40,6 @@ class ToImmediate a where
 instance ToImmediate Literal where
   imm lit =
     case lit of
-      Int8 i -> Imm (fromIntegral i)
-      Int16 i -> Imm (fromIntegral i)
-      Int32 i -> Imm (fromIntegral i)
-      Int64 i -> Imm (fromIntegral i)
-      Uint8 i -> Imm (fromIntegral i)
-      Uint16 i -> Imm (fromIntegral i)
-      Uint32 i -> Imm (fromIntegral i)
       Uint64 i -> Imm (fromIntegral i)
 
 data Memory isa = Mem {base :: Register isa, offset :: Int64}
