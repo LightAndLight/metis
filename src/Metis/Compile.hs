@@ -1,4 +1,5 @@
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Metis.Compile (
@@ -14,7 +15,9 @@ module Metis.Compile (
   runProgram,
 ) where
 
+import Control.Monad.Fix (MonadFix)
 import Control.Monad.IO.Class (MonadIO, liftIO)
+import Data.Foldable (traverse_)
 import Data.Text (Text)
 import qualified Data.Text.IO as Text.IO
 import Data.Text.Lazy.Builder (Builder)
@@ -132,30 +135,43 @@ link inFile outFile = do
     NoStdin
     IgnoreStdout
 
-compile :: (MonadIO m) => FilePath -> Core.Expr Void -> FilePath -> m ()
+compile :: (MonadFix m, MonadIO m) => FilePath -> Core.Expr Void -> FilePath -> m ()
 compile buildDir expr outPath = do
   liftIO $ Directory.createDirectoryIfMissing True buildDir
 
   let programName = FilePath.takeBaseName outPath
 
-  let anf = Anf.fromCore absurd expr
+  let (anfInfo, anf) = Anf.fromCore absurd expr
   let liveness = Liveness.liveness anf
-  (asm, resultLocation) <- noLogging $ allocateRegisters_X86_64 (generalPurposeRegisters @X86_64) anf liveness
+  (asm, resultLocation) <-
+    noLogging $
+      allocateRegisters_X86_64
+        (generalPurposeRegisters @X86_64)
+        anfInfo
+        anf
+        liveness
+        (Symbol "main")
   asmText <-
     fmap (Asm.printAsm printInstruction_X86_64) . Asm.runAsmBuilderT $ do
       formatString <- Asm.string "%u\n"
       _ <-
-        Asm.block "main" [Asm.Global] $
-          asm
-            <> [ lea Op2{src = formatString, dest = Rdi}
-               , case resultLocation of
+        case asm of
+          [] -> error "TODO: no assembly generated"
+          (entrypointLabel, entrypointInstructions) : rest -> do
+            _ <- Asm.block entrypointLabel.value [Asm.Global] entrypointInstructions
+            traverse_ (\(label, instructions) -> Asm.block label.value [] instructions) rest
+            Asm.block
+              "print_and_exit"
+              []
+              [ lea Op2{src = formatString, dest = Rdi}
+              , case resultLocation of
                   Register register -> mov Op2{src = register, dest = Rsi}
                   Stack offset -> mov Op2{src = Mem{base = Rbp, offset}, dest = Rsi}
-               , xor Op2{src = Rax, dest = Rax}
-               , call (Symbol "printf")
-               , mov Op2{src = imm (0 :: Word64), dest = Rdi}
-               , call (Symbol "exit")
-               ]
+              , xor Op2{src = Rax, dest = Rax}
+              , call (Symbol "printf")
+              , mov Op2{src = imm (0 :: Word64), dest = Rdi}
+              , call (Symbol "exit")
+              ]
       pure ()
 
   let objectFile = buildDir </> programName <.> "o"

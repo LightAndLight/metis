@@ -1,5 +1,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# OPTIONS_GHC -Wno-ambiguous-fields #-}
 
 module Metis.Anf (
   Expr (..),
@@ -8,6 +10,7 @@ module Metis.Anf (
   Simple (..),
   Compound (..),
   Binop (..),
+  ExprInfo (..),
 
   -- * Core translation
   fromCore,
@@ -24,10 +27,13 @@ module Metis.Anf (
 
 import Bound.Scope.Simple (fromScope)
 import Bound.Var (unvar)
-import Control.Monad.State.Class (gets, modify)
-import Control.Monad.State.Strict (StateT, runStateT)
+import Control.Monad.State.Class (get, gets, modify, put)
+import Control.Monad.State.Strict (StateT, lift, runStateT)
 import Data.Functor.Identity (runIdentity)
+import Data.HashMap.Strict (HashMap)
+import qualified Data.HashMap.Strict as HashMap
 import Data.Hashable (Hashable)
+import qualified Data.Maybe as Maybe
 import Data.Word (Word64)
 import qualified Metis.Core as Core
 import Metis.Literal (Literal)
@@ -38,6 +44,9 @@ data Expr
   = Simple Simple
   | LetS Var VarInfo Simple Expr
   | LetC Var VarInfo Compound Expr
+  | IfThenElse Simple Expr Expr Expr
+  | Jump Var Simple
+  | Block Var Var Expr
   deriving (Show, Eq)
 
 data Simple
@@ -52,17 +61,31 @@ data Compound
 data Binop = Add | Subtract
   deriving (Show, Eq)
 
-data AnfBuilderState = AnfBuilderState {nextVar :: Word64, program :: Expr -> Expr}
+newtype ExprInfo = ExprInfo {labelArgs :: Var -> Var}
+
+data AnfBuilderState = AnfBuilderState
+  { nextVar :: Word64
+  , program :: Expr -> Expr
+  , labelArgs :: HashMap Var Var
+  }
 
 newtype AnfBuilderT m a = AnfBuilderT {value :: StateT AnfBuilderState m a}
   deriving (Functor, Applicative, Monad)
 
-runAnfBuilderT :: (Monad m) => AnfBuilderT m Simple -> m Expr
+runAnfBuilderT :: (Monad m) => AnfBuilderT m a -> m (AnfBuilderState, a)
 runAnfBuilderT ma = do
-  (a, s) <- runStateT ma.value AnfBuilderState{nextVar = 0, program = id}
-  pure $ s.program (Simple a)
+  (a, s) <-
+    runStateT
+      ma.value
+      AnfBuilderState
+        { nextVar = 0
+        , program = id
+        , labelArgs =
+            mempty
+        }
+  pure (s, a)
 
-newtype Var = MkVar Word64
+newtype Var = MkVar {value :: Word64}
   deriving (Show, Eq, Hashable)
 
 freshVar :: (Monad m) => AnfBuilderT m Var
@@ -93,9 +116,28 @@ letC ty value = do
   emit $ LetC var (typeVarInfo ty) value
   pure var
 
-fromCore :: (a -> Var) -> Core.Expr a -> Expr
-fromCore toVar =
-  runIdentity . runAnfBuilderT . fromCoreExpr toVar
+block :: (Monad m) => Var -> Var -> AnfBuilderT m ()
+block label arg = do
+  emit $ Block label arg
+  AnfBuilderT $ modify (\s -> (s :: AnfBuilderState){labelArgs = HashMap.insert label arg s.labelArgs})
+
+programOf :: (Monad m) => AnfBuilderT m a -> AnfBuilderT m (Expr -> Expr, a)
+programOf ma =
+  AnfBuilderT $ do
+    s <- get
+    (a, s') <- lift $ runStateT ma.value s{program = id}
+    put s'{program = s.program}
+    pure (s'.program, a)
+
+fromCore :: (a -> Var) -> Core.Expr a -> (ExprInfo, Expr)
+fromCore toVar expr =
+  ( ExprInfo
+      { labelArgs = \label -> Maybe.fromMaybe (error $ show label <> " missing from label args map") $ HashMap.lookup label s.labelArgs
+      }
+  , s.program (Simple simple)
+  )
+  where
+    (s, simple) = runIdentity . runAnfBuilderT $ fromCoreExpr toVar expr
 
 fromCoreExpr :: (Monad m) => (a -> Var) -> Core.Expr a -> AnfBuilderT m Simple
 fromCoreExpr toVar expr =
@@ -114,5 +156,20 @@ fromCoreExpr toVar expr =
       Var <$> letC ty (Binop Subtract a' b')
     Core.Let _ _ valueTy value rest -> do
       value' <- fromCoreExpr toVar value
-      var <- letS valueTy value'
+      var <-
+        case value' of
+          Var var ->
+            pure var
+          Literal{} ->
+            letS valueTy value'
       fromCoreExpr (unvar (\() -> var) toVar) (fromScope rest)
+    Core.IfThenElse _ cond then_ else_ -> do
+      cond' <- fromCoreExpr toVar cond
+      (then_', thenSimple) <- programOf $ fromCoreExpr toVar then_
+      (else_', elseSimple) <- programOf $ fromCoreExpr toVar else_
+      label <- freshVar
+      emit $ IfThenElse cond' (then_' $ Jump label thenSimple) (else_' $ Jump label elseSimple)
+
+      arg <- freshVar
+      block label arg
+      pure $ Var arg

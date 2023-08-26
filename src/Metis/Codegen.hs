@@ -6,7 +6,11 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Metis.Codegen (printInstruction_X86_64, printInstructions_X86_64) where
+module Metis.Codegen (
+  printInstruction_X86_64,
+  printInstructions_X86_64,
+  printBlocks_X86_64,
+) where
 
 import Data.Text.Lazy.Builder (Builder)
 import qualified Data.Text.Lazy.Builder as Builder
@@ -25,6 +29,9 @@ printMemory Mem{base, offset} = Builder.fromString (show offset) <> "(" <> print
 printSymbol :: Symbol -> Builder
 printSymbol sym = Builder.fromText sym.value
 
+printBlocks_X86_64 :: [(Symbol, [Instruction X86_64])] -> Builder
+printBlocks_X86_64 = foldMap (\(label, instructions) -> printSymbol label <> ":\n" <> printInstructions_X86_64 instructions)
+
 printInstructions_X86_64 :: [Instruction X86_64] -> Builder
 printInstructions_X86_64 = foldMap ((<> "\n") . printInstruction_X86_64)
 
@@ -37,6 +44,10 @@ printInstruction_X86_64 inst =
       "pop " <> printRegister reg
     Call_s sym ->
       "call " <> printSymbol sym
+    Je_s sym ->
+      "je " <> printSymbol sym
+    Jmp_s sym ->
+      "jmp " <> printSymbol sym
     Inst2_ir inst2 op2 ->
       -- AT&T syntax
       printInst2 inst2 <> " " <> printImmediate op2.src <> ", " <> printRegister op2.dest
@@ -52,6 +63,13 @@ printInstruction_X86_64 inst =
       "lea " <> printMemory op2.src <> ", " <> printRegister op2.dest
     Lea_sr op2 ->
       "lea " <> printSymbol op2.src <> ", " <> printRegister op2.dest
+    Cmp_ri a b ->
+      -- In AT&T syntax, `cmp a, b` returns "greater than" when `b > a`.
+      -- `Cmp_ri` keeps its arguments in the actual comparison order, so we have to swap the
+      -- operands when generating AT&T syntax.
+      "cmp " <> printImmediate b <> ", " <> printRegister a
+    Cmp_mi a b ->
+      "cmp " <> printImmediate b <> ", " <> printMemory a
   where
     printInst2 :: Inst2 -> Builder
     printInst2 inst2 =

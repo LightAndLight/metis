@@ -14,6 +14,9 @@ module Metis.Isa (
   Op2 (..),
   Add (..),
   Call (..),
+  Cmp (..),
+  Je (..),
+  Jmp (..),
   Lea (..),
   Mov (..),
   Pop (..),
@@ -46,6 +49,7 @@ instance ToImmediate Literal where
   imm lit =
     case lit of
       Uint64 i -> Imm (fromIntegral i)
+      Bool b -> if b then Imm 1 else Imm 0
 
 instance ToImmediate Word64 where
   imm = Imm
@@ -57,6 +61,8 @@ newtype Symbol = Symbol {value :: Text}
 class Call isa a where call :: a -> Instruction isa
 class Pop isa a where pop :: a -> Instruction isa
 class Push isa a where push :: a -> Instruction isa
+class Jmp isa a where jmp :: a -> Instruction isa
+class Je isa a where je :: a -> Instruction isa
 
 data Op2 src dest = Op2 {src :: src, dest :: dest}
 
@@ -65,3 +71,4 @@ class Lea isa src dest where lea :: Op2 src dest -> Instruction isa
 class Mov isa src dest where mov :: Op2 src dest -> Instruction isa
 class Sub isa src dest where sub :: Op2 src dest -> Instruction isa
 class Xor isa src dest where xor :: Op2 src dest -> Instruction isa
+class Cmp isa a b where cmp :: a -> b -> Instruction isa

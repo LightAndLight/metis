@@ -36,4 +36,95 @@ spec =
                   (Anf.Simple . Anf.Var $ Anf.MkVar 1)
               )
 
-      Anf.fromCore absurd core `shouldBe` anf
+      snd (Anf.fromCore absurd core) `shouldBe` anf
+    it "let x = if true then 99 else 100; x + x" $ do
+      let lit99 = Literal.Uint64 99
+      let lit100 = Literal.Uint64 100
+
+      let core =
+            Let
+              Type.Uint64
+              Nothing
+              Type.Uint64
+              ( IfThenElse
+                  Type.Uint64
+                  (Literal $ Literal.Bool True)
+                  (Literal lit99)
+                  (Literal lit100)
+              )
+              . toScope
+              $ Add Type.Uint64 (Var $ B ()) (Var $ B ())
+
+      {-
+      if true
+        then jump @0(99)
+        else jump @0(100)
+      @0(%1):
+      %2 = %1 + %1
+      %2
+      -}
+      let anf =
+            Anf.IfThenElse (Anf.Literal $ Literal.Bool True) (Anf.Jump (Anf.MkVar 0) (Anf.Literal lit99)) (Anf.Jump (Anf.MkVar 0) (Anf.Literal lit100)) $
+              Anf.Block (Anf.MkVar 0) (Anf.MkVar 1) $
+                Anf.LetC (Anf.MkVar 2) (Anf.VarInfo{size = Type.sizeOf Type.Uint64}) (Anf.Binop Anf.Add (Anf.Var $ Anf.MkVar 1) (Anf.Var $ Anf.MkVar 1)) $
+                  Anf.Simple (Anf.Var $ Anf.MkVar 2)
+
+      snd (Anf.fromCore absurd core) `shouldBe` anf
+    it "let x = if true then let y = 1; y + 98 else let y = 2; let z = 3; y + z + 95; x + x" $ do
+      let
+        core =
+          let
+            lit98 = Literal $ Literal.Uint64 98
+            lit1 = Literal $ Literal.Uint64 1
+            lit2 = Literal $ Literal.Uint64 2
+            lit3 = Literal $ Literal.Uint64 3
+            lit95 = Literal $ Literal.Uint64 95
+            value =
+              IfThenElse
+                Type.Uint64
+                (Literal $ Literal.Bool True)
+                ( Let Type.Uint64 (Just "y") Type.Uint64 lit1 . toScope $
+                    Add Type.Uint64 (Var $ B ()) lit98
+                )
+                ( Let Type.Uint64 (Just "y") Type.Uint64 lit2 . toScope $
+                    Let Type.Uint64 (Just "z") Type.Uint64 lit3 . toScope $
+                      Add Type.Uint64 (Add Type.Uint64 (Var . F $ B ()) (Var $ B ())) lit95
+                )
+           in
+            Let Type.Uint64 (Just "x") Type.Uint64 value . toScope $
+              Add Type.Uint64 (Var $ B ()) (Var $ B ())
+      {-
+      if true
+        then
+          %0 = 1
+          %1 = %0 + 98
+          jump @6 %1
+        else
+          %2 = 2
+          %3 = 3
+          %4 = %2 + %3
+          %5 = %4 + 95
+          jump @6 %5
+      @6(%7):
+      %8 = %7 + %7
+      %8
+      -}
+      let uint64Info = Anf.VarInfo{size = 8}
+      let anf =
+            Anf.IfThenElse
+              (Anf.Literal $ Literal.Bool True)
+              ( Anf.LetS (Anf.MkVar 0) uint64Info (Anf.Literal $ Literal.Uint64 1) $
+                  Anf.LetC (Anf.MkVar 1) uint64Info (Anf.Binop Anf.Add (Anf.Var $ Anf.MkVar 0) (Anf.Literal $ Literal.Uint64 98)) $
+                    Anf.Jump (Anf.MkVar 6) (Anf.Var $ Anf.MkVar 1)
+              )
+              ( Anf.LetS (Anf.MkVar 2) uint64Info (Anf.Literal $ Literal.Uint64 2) $
+                  Anf.LetS (Anf.MkVar 3) uint64Info (Anf.Literal $ Literal.Uint64 3) $
+                    Anf.LetC (Anf.MkVar 4) uint64Info (Anf.Binop Anf.Add (Anf.Var $ Anf.MkVar 2) (Anf.Var $ Anf.MkVar 3)) $
+                      Anf.LetC (Anf.MkVar 5) uint64Info (Anf.Binop Anf.Add (Anf.Var $ Anf.MkVar 4) (Anf.Literal $ Literal.Uint64 95)) $
+                        Anf.Jump (Anf.MkVar 6) (Anf.Var $ Anf.MkVar 5)
+              )
+              $ Anf.Block (Anf.MkVar 6) (Anf.MkVar 7)
+              $ Anf.LetC (Anf.MkVar 8) uint64Info (Anf.Binop Anf.Add (Anf.Var $ Anf.MkVar 7) (Anf.Var $ Anf.MkVar 7))
+              $ Anf.Simple (Anf.Var $ Anf.MkVar 8)
+
+      snd (Anf.fromCore absurd core) `shouldBe` anf

@@ -17,6 +17,7 @@ data Expr a
   | Add Type (Expr a) (Expr a)
   | Subtract Type (Expr a) (Expr a)
   | Let Type (Maybe Text) Type (Expr a) (Scope () Expr a)
+  | IfThenElse Type (Expr a) (Expr a) (Expr a)
   deriving (Functor, Foldable, Traversable)
 
 typeOf :: (a -> Type) -> Expr a -> Type
@@ -27,3 +28,4 @@ typeOf varTy expr =
     Add ty _ _ -> ty
     Subtract ty _ _ -> ty
     Let ty _ _ _ _ -> ty
+    IfThenElse ty _ _ _ -> ty

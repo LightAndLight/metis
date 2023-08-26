@@ -9,9 +9,11 @@ module Metis.Log (
   noLogging,
 ) where
 
+import Control.Monad.Fix (MonadFix)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Reader (ReaderT, runReaderT)
 import Control.Monad.Reader.Class (ask)
+import qualified Control.Monad.State.Lazy
 import qualified Control.Monad.State.Strict
 import Control.Monad.Trans.Class (lift)
 import Data.Text (Text)
@@ -24,8 +26,14 @@ class (Monad m) => MonadLog m where
 instance (MonadLog m) => MonadLog (Control.Monad.State.Strict.StateT s m) where
   trace = lift . trace
 
+instance (MonadLog m) => MonadLog (Control.Monad.State.Lazy.StateT s m) where
+  trace = lift . trace
+
+instance (MonadLog m) => MonadLog (Control.Monad.Reader.ReaderT r m) where
+  trace = lift . trace
+
 newtype WithLoggingT m a = WithLoggingT {value :: ReaderT (Text -> IO ()) m a}
-  deriving (Functor, Applicative, Monad)
+  deriving (Functor, Applicative, Monad, MonadFix)
 
 withLogging :: WithLoggingT m a -> m a
 withLogging ma = runReaderT ma.value (liftIO . Text.IO.hPutStrLn System.IO.stderr)
@@ -36,7 +44,7 @@ instance (MonadIO m) => MonadLog (WithLoggingT m) where
     liftIO $ f s
 
 newtype NoLoggingT m a = NoLoggingT {value :: m a}
-  deriving (Functor, Applicative, Monad)
+  deriving (Functor, Applicative, Monad, MonadFix)
 
 noLogging :: NoLoggingT m a -> m a
 noLogging ma = ma.value

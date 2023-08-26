@@ -15,9 +15,9 @@ import qualified Data.Text.Lazy.Builder as Text.Lazy.Builder
 import Data.Void (Void, absurd)
 import Metis.AllocateRegisters (allocateRegisters_X86_64)
 import qualified Metis.Anf as Anf
-import Metis.Codegen (printInstructions_X86_64)
+import Metis.Codegen (printBlocks_X86_64)
 import Metis.Core (Expr (..))
-import Metis.Isa (Isa (generalPurposeRegisters))
+import Metis.Isa (Symbol (..), generalPurposeRegisters)
 import Metis.Isa.X86_64 (Register (..), X86_64)
 import qualified Metis.Literal as Literal
 import qualified Metis.Liveness as Liveness
@@ -42,10 +42,10 @@ data TestCase where
 testCase :: TestCase -> SpecWith ()
 testCase TestCase{title, expr, availableRegisters, expectedOutput} =
   it title $ do
-    let anf = Anf.fromCore absurd expr
+    let (anfInfo, anf) = Anf.fromCore absurd expr
     let liveness = Liveness.liveness anf
-    (insts, _) <- noLogging $ allocateRegisters_X86_64 availableRegisters anf liveness
-    let asm = Text.Lazy.Builder.toLazyText (printInstructions_X86_64 insts)
+    (blocks, _) <- noLogging $ allocateRegisters_X86_64 availableRegisters anfInfo anf liveness (Symbol "main")
+    let asm = Text.Lazy.Builder.toLazyText (printBlocks_X86_64 blocks)
     asm `shouldBe` Text.Lazy.Builder.toLazyText (foldMap @[] (<> "\n") expectedOutput)
 
     (exitCode, stdout, stderr) <- Process.readProcessWithExitCode "as" ["-o", "/dev/null"] (Text.Lazy.unpack asm)
@@ -73,7 +73,8 @@ spec =
                 Var (B ())
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
-            [ "mov $99, %rax"
+            [ "main:"
+            , "mov $99, %rax"
             , "add $99, %rax"
             ]
         }
@@ -87,7 +88,8 @@ spec =
                 Add Type.Uint64 (Var $ B ()) (Var $ B ())
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
-            [ "mov $99, %rax"
+            [ "main:"
+            , "mov $99, %rax"
             , "add %rax, %rax"
             ]
         }
@@ -103,7 +105,8 @@ spec =
                   Add Type.Uint64 (Var $ F $ B ()) (Var $ B ())
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
-            [ "mov $99, %rax"
+            [ "main:"
+            , "mov $99, %rax"
             , "mov $100, %rbx"
             , "add %rbx, %rax"
             ]
@@ -122,7 +125,8 @@ spec =
                     Add Type.Uint64 (Add Type.Uint64 (Var . F . F $ B ()) (Var . F $ B ())) (Var $ B ())
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
-            [ "mov $99, %rax"
+            [ "main:"
+            , "mov $99, %rax"
             , "mov $100, %rbx"
             , "mov $101, %rcx"
             , "add %rbx, %rax"
@@ -143,11 +147,108 @@ spec =
                     Add Type.Uint64 (Add Type.Uint64 (Var . F . F $ B ()) (Var . F $ B ())) (Var $ B ())
         , availableRegisters = [Rax]
         , expectedOutput =
-            [ "mov $99, %rax"
+            [ "main:"
+            , "mov $99, %rax"
             , "mov $100, 0(%rbp)"
             , "mov $101, -8(%rbp)"
             , "add 0(%rbp), %rax"
             , "add -8(%rbp), %rax"
+            ]
+        }
+    , TestCase
+        { title = "let x = if true then let y = 1; y + 98 else let y = 2; let z = 3; y + z + 95; x + x"
+        , expr =
+            let
+              lit98 = Literal $ Literal.Uint64 98
+              lit1 = Literal $ Literal.Uint64 1
+              lit2 = Literal $ Literal.Uint64 2
+              lit3 = Literal $ Literal.Uint64 3
+              lit95 = Literal $ Literal.Uint64 95
+              value =
+                IfThenElse
+                  Type.Uint64
+                  (Literal $ Literal.Bool True)
+                  ( Let Type.Uint64 (Just "y") Type.Uint64 lit1 . toScope $
+                      Add Type.Uint64 (Var $ B ()) lit98
+                  )
+                  ( Let Type.Uint64 (Just "y") Type.Uint64 lit2 . toScope $
+                      Let Type.Uint64 (Just "z") Type.Uint64 lit3 . toScope $
+                        Add Type.Uint64 (Add Type.Uint64 (Var . F $ B ()) (Var $ B ())) lit95
+                  )
+             in
+              Let Type.Uint64 (Just "x") Type.Uint64 value . toScope $
+                Add Type.Uint64 (Var $ B ()) (Var $ B ())
+        , availableRegisters = generalPurposeRegisters @X86_64
+        , {-
+          if true
+            then
+              %0 = 1
+              %1 = %0 + 98
+              jump @6 %1
+            else
+              %2 = 2
+              %3 = 3
+              %4 = %2 + %3
+              %5 = %4 + 95
+              jump @6 %5
+          @6(%7):
+          %8 = %7 + %7
+          %8
+          -}
+          expectedOutput =
+            [ "main:"
+            , "mov $1, %rax"
+            , "cmp $0, %rax"
+            , "je else"
+            , "then:"
+            , "mov $1, %rax"
+            , "add $98, %rax"
+            , "jmp block_6"
+            , "else:"
+            , "mov $2, %rax"
+            , "mov $3, %rbx"
+            , "add %rbx, %rax"
+            , "add $95, %rax"
+            , "jmp block_6"
+            , "block_6:"
+            , "add %rax, %rax"
+            ]
+        }
+    , TestCase
+        { title = "let x = 3; let y = if true then x else 22; x + y"
+        , expr =
+            let
+              lit3 = Literal $ Literal.Uint64 3
+              lit22 = Literal $ Literal.Uint64 22
+              value = IfThenElse Type.Uint64 (Literal $ Literal.Bool True) (Var $ B ()) lit22
+             in
+              Let Type.Uint64 (Just "x") Type.Uint64 lit3 . toScope $
+                Let Type.Uint64 (Just "y") Type.Uint64 value . toScope $
+                  Add Type.Uint64 (Var $ F $ B ()) (Var $ B ())
+        , availableRegisters = generalPurposeRegisters @X86_64
+        , expectedOutput =
+            {-
+            %0 = 3
+            if true
+              then jump @1 %0
+              else jump @1 22
+            @1(%2):
+            %3 = %0 + %2
+            %3
+            -}
+            [ "main:"
+            , "mov $3, %rax"
+            , "mov $1, %rbx"
+            , "cmp $0, %rbx"
+            , "je else"
+            , "then:"
+            , "mov %rax, %rbx"
+            , "jmp block_1"
+            , "else:"
+            , "mov $22, %rbx"
+            , "jmp block_1"
+            , "block_1:"
+            , "add %rbx, %rax"
             ]
         }
     ]

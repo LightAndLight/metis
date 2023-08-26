@@ -8,8 +8,11 @@ module Metis.Isa.X86_64 (X86_64, Register (..), Instruction (..), Inst2 (..)) wh
 import Metis.Isa (
   Add (..),
   Call (..),
+  Cmp (..),
   Immediate,
   Isa (..),
+  Je (..),
+  Jmp (..),
   Lea (..),
   Memory,
   Mov (..),
@@ -47,6 +50,8 @@ instance Isa X86_64 where
     = Push_r (Register X86_64)
     | Pop_r (Register X86_64)
     | Call_s Symbol
+    | Je_s Symbol
+    | Jmp_s Symbol
     | Inst2_ir Inst2 (Op2 Immediate (Register X86_64))
     | Inst2_im Inst2 (Op2 Immediate (Memory X86_64))
     | Inst2_rr Inst2 (Op2 (Register X86_64) (Register X86_64))
@@ -54,6 +59,8 @@ instance Isa X86_64 where
     | Inst2_mr Inst2 (Op2 (Memory X86_64) (Register X86_64))
     | Lea_mr (Op2 (Memory X86_64) (Register X86_64))
     | Lea_sr (Op2 Symbol (Register X86_64))
+    | Cmp_ri (Register X86_64) Immediate
+    | Cmp_mi (Memory X86_64) Immediate
 
   registerName reg =
     case reg of
@@ -124,8 +131,14 @@ instance Xor X86_64 (Memory X86_64) (Register X86_64) where xor = Inst2_mr Xor
 instance Lea X86_64 (Memory X86_64) (Register X86_64) where lea = Lea_mr
 instance Lea X86_64 Symbol (Register X86_64) where lea = Lea_sr
 
+instance Cmp X86_64 (Register X86_64) Immediate where cmp = Cmp_ri
+instance Cmp X86_64 (Memory X86_64) Immediate where cmp = Cmp_mi
+
 instance Push X86_64 (Register X86_64) where push = Push_r
 
 instance Pop X86_64 (Register X86_64) where pop = Pop_r
 
 instance Call X86_64 Symbol where call = Call_s
+
+instance Je X86_64 Symbol where je = Je_s
+instance Jmp X86_64 Symbol where jmp = Jmp_s
