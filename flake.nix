@@ -14,6 +14,8 @@
             cabal-install
             (haskell-language-server.override { supportedGhcVersions = [ ghcVersion ]; })
             haskellPackages.fourmolu
+
+            gdb
           ];
 
           # TODO: make this better. It's a `metis` implementation detail.
