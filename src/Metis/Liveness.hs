@@ -32,7 +32,7 @@ liveness expr = liveAt
 livenessExpr :: Lazy.HashMap Var (HashSet Var) -> Expr -> (HashSet Var, HashMap Var Liveness, Lazy.HashMap Var (HashSet Var))
 livenessExpr labelArgVars expr =
   case expr of
-    Simple s ->
+    Return s ->
       case s of
         Var var -> (HashSet.singleton var, mempty, mempty)
         Literal{} -> (mempty, mempty, mempty)
@@ -70,7 +70,7 @@ livenessExpr labelArgVars expr =
         )
     Jump label arg ->
       (varsSimple arg, mempty, HashMap.Lazy.singleton label (varsSimple arg))
-    Block label arg rest ->
+    Label label arg rest ->
       let
         (live, liveAt, labelArgVars') = livenessExpr labelArgVars rest
         live' = HashSet.delete arg live

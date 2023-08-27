@@ -41,12 +41,12 @@ import Metis.Type (Type)
 import qualified Metis.Type as Type
 
 data Expr
-  = Simple Simple
+  = Return Simple
   | LetS Var VarInfo Simple Expr
   | LetC Var VarInfo Compound Expr
   | IfThenElse Simple Expr Expr Expr
   | Jump Var Simple
-  | Block Var Var Expr
+  | Label Var Var Expr
   deriving (Show, Eq)
 
 data Simple
@@ -118,7 +118,7 @@ letC ty value = do
 
 block :: (Monad m) => Var -> Var -> AnfBuilderT m ()
 block label arg = do
-  emit $ Block label arg
+  emit $ Label label arg
   AnfBuilderT $ modify (\s -> (s :: AnfBuilderState){labelArgs = HashMap.insert label arg s.labelArgs})
 
 programOf :: (Monad m) => AnfBuilderT m a -> AnfBuilderT m (Expr -> Expr, a)
@@ -134,7 +134,7 @@ fromCore toVar expr =
   ( ExprInfo
       { labelArgs = \label -> Maybe.fromMaybe (error $ show label <> " missing from label args map") $ HashMap.lookup label s.labelArgs
       }
-  , s.program (Simple simple)
+  , s.program (Return simple)
   )
   where
     (s, simple) = runIdentity . runAnfBuilderT $ fromCoreExpr toVar expr

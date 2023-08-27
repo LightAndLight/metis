@@ -33,7 +33,7 @@ spec =
                   (Anf.MkVar 1)
                   (Anf.VarInfo{size = Type.sizeOf Type.Uint64})
                   (Anf.Binop Anf.Add (Anf.Var $ Anf.MkVar 0) (Anf.Var $ Anf.MkVar 0))
-                  (Anf.Simple . Anf.Var $ Anf.MkVar 1)
+                  (Anf.Return . Anf.Var $ Anf.MkVar 1)
               )
 
       snd (Anf.fromCore absurd core) `shouldBe` anf
@@ -65,9 +65,9 @@ spec =
       -}
       let anf =
             Anf.IfThenElse (Anf.Literal $ Literal.Bool True) (Anf.Jump (Anf.MkVar 0) (Anf.Literal lit99)) (Anf.Jump (Anf.MkVar 0) (Anf.Literal lit100)) $
-              Anf.Block (Anf.MkVar 0) (Anf.MkVar 1) $
+              Anf.Label (Anf.MkVar 0) (Anf.MkVar 1) $
                 Anf.LetC (Anf.MkVar 2) (Anf.VarInfo{size = Type.sizeOf Type.Uint64}) (Anf.Binop Anf.Add (Anf.Var $ Anf.MkVar 1) (Anf.Var $ Anf.MkVar 1)) $
-                  Anf.Simple (Anf.Var $ Anf.MkVar 2)
+                  Anf.Return (Anf.Var $ Anf.MkVar 2)
 
       snd (Anf.fromCore absurd core) `shouldBe` anf
     it "let x = if true then let y = 1; y + 98 else let y = 2; let z = 3; y + z + 95; x + x" $ do
@@ -123,8 +123,8 @@ spec =
                       Anf.LetC (Anf.MkVar 5) uint64Info (Anf.Binop Anf.Add (Anf.Var $ Anf.MkVar 4) (Anf.Literal $ Literal.Uint64 95)) $
                         Anf.Jump (Anf.MkVar 6) (Anf.Var $ Anf.MkVar 5)
               )
-              $ Anf.Block (Anf.MkVar 6) (Anf.MkVar 7)
+              $ Anf.Label (Anf.MkVar 6) (Anf.MkVar 7)
               $ Anf.LetC (Anf.MkVar 8) uint64Info (Anf.Binop Anf.Add (Anf.Var $ Anf.MkVar 7) (Anf.Var $ Anf.MkVar 7))
-              $ Anf.Simple (Anf.Var $ Anf.MkVar 8)
+              $ Anf.Return (Anf.Var $ Anf.MkVar 8)
 
       snd (Anf.fromCore absurd core) `shouldBe` anf

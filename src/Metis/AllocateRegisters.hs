@@ -263,7 +263,7 @@ allocateRegistersExpr_X86_64 ::
   m (Location X86_64)
 allocateRegistersExpr_X86_64 varSizes expr =
   case expr of
-    Anf.Simple simple ->
+    Anf.Return simple ->
       allocateRegistersSimple_X86_64 simple
     Anf.LetS var varInfo value rest -> do
       freeKills var
@@ -481,7 +481,7 @@ allocateRegistersExpr_X86_64 varSizes expr =
 
       emit [jmp $ Symbol . Text.pack $ "block_" <> show label.value]
       pure undefined -- TODO: How do I remove this undefined? Some tweak to the ANF representation?
-    Anf.Block label arg rest -> do
+    Anf.Label label arg rest -> do
       Log.trace "block"
       Log.trace . Text.pack $ "  label: " <> show label
       Log.trace . Text.pack $ "  arg: " <> show arg
