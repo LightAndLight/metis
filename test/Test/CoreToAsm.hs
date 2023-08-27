@@ -15,9 +15,11 @@ import qualified Data.Text.Lazy.Builder as Text.Lazy.Builder
 import Data.Void (Void, absurd)
 import Metis.AllocateRegisters (allocateRegisters_X86_64)
 import qualified Metis.Anf as Anf
-import Metis.Codegen (printBlocks_X86_64)
+import Metis.Asm (printAsm)
+import Metis.Asm.Builder (runAsmBuilderT)
+import Metis.Codegen (printInstruction_X86_64)
 import Metis.Core (Expr (..))
-import Metis.Isa (Symbol (..), generalPurposeRegisters)
+import Metis.Isa (generalPurposeRegisters)
 import Metis.Isa.X86_64 (Register (..), X86_64)
 import qualified Metis.Literal as Literal
 import qualified Metis.Liveness as Liveness
@@ -44,8 +46,9 @@ testCase TestCase{title, expr, availableRegisters, expectedOutput} =
   it title $ do
     let (anfInfo, anf) = Anf.fromCore absurd expr
     let liveness = Liveness.liveness anf
-    (blocks, _) <- noLogging $ allocateRegisters_X86_64 availableRegisters anfInfo anf liveness (Symbol "main")
-    let asm = Text.Lazy.Builder.toLazyText (printBlocks_X86_64 blocks)
+    asm <- fmap (Text.Lazy.Builder.toLazyText . printAsm printInstruction_X86_64) . runAsmBuilderT . noLogging $ do
+      _ <- allocateRegisters_X86_64 availableRegisters anfInfo anf liveness "main" []
+      pure ()
     asm `shouldBe` Text.Lazy.Builder.toLazyText (foldMap @[] (<> "\n") expectedOutput)
 
     (exitCode, stdout, stderr) <- Process.readProcessWithExitCode "as" ["-o", "/dev/null"] (Text.Lazy.unpack asm)
@@ -73,7 +76,8 @@ spec =
                 Var (B ())
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
-            [ "main:"
+            [ ".text"
+            , "main:"
             , "mov $99, %rax"
             , "add $99, %rax"
             ]
@@ -88,7 +92,8 @@ spec =
                 Add Type.Uint64 (Var $ B ()) (Var $ B ())
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
-            [ "main:"
+            [ ".text"
+            , "main:"
             , "mov $99, %rax"
             , "add %rax, %rax"
             ]
@@ -105,7 +110,8 @@ spec =
                   Add Type.Uint64 (Var $ F $ B ()) (Var $ B ())
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
-            [ "main:"
+            [ ".text"
+            , "main:"
             , "mov $99, %rax"
             , "mov $100, %rbx"
             , "add %rbx, %rax"
@@ -125,7 +131,8 @@ spec =
                     Add Type.Uint64 (Add Type.Uint64 (Var . F . F $ B ()) (Var . F $ B ())) (Var $ B ())
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
-            [ "main:"
+            [ ".text"
+            , "main:"
             , "mov $99, %rax"
             , "mov $100, %rbx"
             , "mov $101, %rcx"
@@ -147,7 +154,8 @@ spec =
                     Add Type.Uint64 (Add Type.Uint64 (Var . F . F $ B ()) (Var . F $ B ())) (Var $ B ())
         , availableRegisters = [Rax]
         , expectedOutput =
-            [ "main:"
+            [ ".text"
+            , "main:"
             , "mov $99, %rax"
             , "mov $100, 0(%rbp)"
             , "mov $101, -8(%rbp)"
@@ -196,7 +204,8 @@ spec =
           %8
           -}
           expectedOutput =
-            [ "main:"
+            [ ".text"
+            , "main:"
             , "mov $1, %rax"
             , "cmp $0, %rax"
             , "je else"
@@ -236,7 +245,8 @@ spec =
             %3 = %0 + %2
             %3
             -}
-            [ "main:"
+            [ ".text"
+            , "main:"
             , "mov $3, %rax"
             , "mov $1, %rbx"
             , "cmp $0, %rbx"

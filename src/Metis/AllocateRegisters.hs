@@ -23,6 +23,7 @@ import Control.Monad.Reader (runReaderT)
 import Control.Monad.Reader.Class (MonadReader, asks)
 import Control.Monad.State.Class (MonadState, gets, modify)
 import Control.Monad.State.Strict (runStateT)
+import Data.Foldable (traverse_)
 import qualified Data.HashMap.Lazy as HashMap.Lazy
 import qualified Data.HashMap.Lazy as Lazy (HashMap)
 import Data.HashMap.Strict (HashMap)
@@ -37,6 +38,9 @@ import qualified Data.Text as Text
 import Data.Word (Word64)
 import GHC.Stack (HasCallStack)
 import qualified Metis.Anf as Anf
+import Metis.Asm (Block (..), BlockAttribute)
+import Metis.Asm.Class (MonadAsm)
+import qualified Metis.Asm.Class as Asm
 import Metis.Isa (
   Add,
   Instruction,
@@ -76,17 +80,19 @@ data AllocateRegistersState isa = AllocateRegistersState
   , locations :: Lazy.HashMap Anf.Var (Location isa)
   , labelArgLocations :: HashMap Anf.Var (Location isa)
   , liveness :: HashMap Anf.Var Liveness
-  , previousBlocks :: [(Symbol, [Instruction isa])]
-  , currentBlockName :: Symbol
+  , previousBlocks :: [Block isa]
+  , currentBlockName :: Text
+  , currentBlockAttributes :: [BlockAttribute]
   , currentBlockInstructions :: [Instruction isa]
   }
 
 initialAllocateRegistersState ::
   Seq (Register isa) ->
   HashMap Anf.Var Liveness ->
-  Symbol ->
+  Text ->
+  [BlockAttribute] ->
   AllocateRegistersState isa
-initialAllocateRegistersState available liveness blockName =
+initialAllocateRegistersState available liveness blockName blockAttributes =
   AllocateRegistersState
     { nextStackOffset = 0
     , available
@@ -95,6 +101,7 @@ initialAllocateRegistersState available liveness blockName =
     , liveness
     , previousBlocks = []
     , currentBlockName = blockName
+    , currentBlockAttributes = blockAttributes
     , currentBlockInstructions = []
     }
 
@@ -137,8 +144,15 @@ declareLabel value = do
     , modify
         ( \s ->
             s
-              { previousBlocks = s.previousBlocks <> [(s.currentBlockName, s.currentBlockInstructions)]
-              , currentBlockName = Symbol value
+              { previousBlocks =
+                  s.previousBlocks
+                    <> [ Block
+                          { label = s.currentBlockName
+                          , attributes = s.currentBlockAttributes
+                          , instructions = s.currentBlockInstructions
+                          }
+                       ]
+              , currentBlockName = value
               , currentBlockInstructions = []
               }
         )
@@ -153,8 +167,15 @@ beginBlock label =
     <$ modify
       ( \s ->
           s
-            { previousBlocks = s.previousBlocks <> [(s.currentBlockName, s.currentBlockInstructions)]
-            , currentBlockName = Symbol label
+            { previousBlocks =
+                s.previousBlocks
+                  <> [ Block
+                        { label = s.currentBlockName
+                        , attributes = s.currentBlockAttributes
+                        , instructions = s.currentBlockInstructions
+                        }
+                     ]
+            , currentBlockName = label
             , currentBlockInstructions = []
             }
       )
@@ -187,14 +208,15 @@ freeLocation location =
       pure ()
 
 allocateRegisters_X86_64 ::
-  (MonadLog m, MonadFix m) =>
+  (MonadAsm X86_64 m, MonadLog m, MonadFix m) =>
   Seq (Register X86_64) ->
   Anf.ExprInfo ->
   Anf.Expr ->
   HashMap Anf.Var Liveness ->
-  Symbol ->
-  m ([(Symbol, [Instruction X86_64])], Location X86_64)
-allocateRegisters_X86_64 available exprInfo expr liveness blockName = do
+  Text ->
+  [BlockAttribute] ->
+  m (Location X86_64)
+allocateRegisters_X86_64 available exprInfo expr liveness blockName blockAttributes = do
   rec (a, s) <-
         runStateT
           ( runReaderT
@@ -204,8 +226,10 @@ allocateRegisters_X86_64 available exprInfo expr liveness blockName = do
                 , labelArgLocations = s.labelArgLocations
                 }
           )
-          (initialAllocateRegistersState available liveness blockName)
-  pure (s.previousBlocks <> [(s.currentBlockName, s.currentBlockInstructions)], a)
+          (initialAllocateRegistersState available liveness blockName blockAttributes)
+  traverse_ (\Block{label, attributes, instructions} -> Asm.block label attributes instructions) s.previousBlocks
+  _ <- Asm.block s.currentBlockName s.currentBlockAttributes s.currentBlockInstructions
+  pure a
 
 allocateRegistersLiteral_X86_64 ::
   (MonadState (AllocateRegistersState X86_64) m, MonadLog m) =>

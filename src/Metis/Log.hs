@@ -1,5 +1,8 @@
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Metis.Log (
   MonadLog (..),
@@ -15,9 +18,10 @@ import Control.Monad.Reader (ReaderT, runReaderT)
 import Control.Monad.Reader.Class (ask)
 import qualified Control.Monad.State.Lazy
 import qualified Control.Monad.State.Strict
-import Control.Monad.Trans.Class (lift)
+import Control.Monad.Trans.Class (MonadTrans, lift)
 import Data.Text (Text)
 import qualified Data.Text.IO as Text.IO
+import Metis.Asm.Class (MonadAsm)
 import qualified System.IO
 
 class (Monad m) => MonadLog m where
@@ -38,10 +42,15 @@ newtype WithLoggingT m a = WithLoggingT {value :: ReaderT (Text -> IO ()) m a}
 withLogging :: WithLoggingT m a -> m a
 withLogging ma = runReaderT ma.value (liftIO . Text.IO.hPutStrLn System.IO.stderr)
 
+instance MonadTrans WithLoggingT where
+  lift = WithLoggingT . lift
+
 instance (MonadIO m) => MonadLog (WithLoggingT m) where
   trace s = WithLoggingT $ do
     f <- ask
     liftIO $ f s
+
+instance (MonadAsm isa m) => MonadAsm isa (WithLoggingT m)
 
 newtype NoLoggingT m a = NoLoggingT {value :: m a}
   deriving (Functor, Applicative, Monad, MonadFix)
@@ -49,5 +58,10 @@ newtype NoLoggingT m a = NoLoggingT {value :: m a}
 noLogging :: NoLoggingT m a -> m a
 noLogging ma = ma.value
 
+instance MonadTrans NoLoggingT where
+  lift = NoLoggingT
+
 instance (Monad m) => MonadLog (NoLoggingT m) where
   trace _ = pure ()
+
+instance (MonadAsm isa m) => MonadAsm isa (NoLoggingT m)

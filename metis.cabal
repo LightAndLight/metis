@@ -28,6 +28,8 @@ library
         Metis.AllocateRegisters
         Metis.Anf
         Metis.Asm
+        Metis.Asm.Builder
+        Metis.Asm.Class
         Metis.Codegen
         Metis.Compile
         Metis.Core
