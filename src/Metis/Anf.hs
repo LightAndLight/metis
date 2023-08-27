@@ -34,6 +34,7 @@ import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 import Data.Hashable (Hashable)
 import qualified Data.Maybe as Maybe
+import Data.Text (Text)
 import Data.Word (Word64)
 import qualified Metis.Core as Core
 import Metis.Literal (Literal)
@@ -51,11 +52,13 @@ data Expr
 
 data Simple
   = Var Var
+  | Name Text
   | Literal Literal
   deriving (Show, Eq)
 
 data Compound
   = Binop Binop Simple Simple
+  | Call Simple [Simple]
   deriving (Show, Eq)
 
 data Binop = Add | Subtract
@@ -144,6 +147,8 @@ fromCoreExpr toVar expr =
   case expr of
     Core.Var var ->
       pure $ Var (toVar var)
+    Core.Name name ->
+      pure $ Name name
     Core.Literal lit ->
       pure $ Literal lit
     Core.Add ty a b -> do
@@ -160,6 +165,8 @@ fromCoreExpr toVar expr =
         case value' of
           Var var ->
             pure var
+          Name{} ->
+            letS valueTy value'
           Literal{} ->
             letS valueTy value'
       fromCoreExpr (unvar (\() -> var) toVar) (fromScope rest)
@@ -173,3 +180,7 @@ fromCoreExpr toVar expr =
       arg <- freshVar
       block label arg
       pure $ Var arg
+    Core.Call ty function args -> do
+      function' <- fromCoreExpr toVar function
+      args' <- traverse (fromCoreExpr toVar) args
+      Var <$> letC ty (Call function' args')

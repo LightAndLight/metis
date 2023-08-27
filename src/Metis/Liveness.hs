@@ -35,6 +35,7 @@ livenessExpr labelArgVars expr =
     Return s ->
       case s of
         Var var -> (HashSet.singleton var, mempty, mempty)
+        Name{} -> (mempty, mempty, mempty)
         Literal{} -> (mempty, mempty, mempty)
     LetS var _ value rest ->
       let
@@ -87,9 +88,11 @@ varsCompound :: Compound -> HashSet Var
 varsCompound compound =
   case compound of
     Binop _ a b -> varsSimple a <> varsSimple b
+    Call a bs -> varsSimple a <> foldMap varsSimple bs
 
 varsSimple :: Simple -> HashSet Var
 varsSimple simple =
   case simple of
     Var var -> HashSet.singleton var
+    Name{} -> mempty
     Literal{} -> mempty
