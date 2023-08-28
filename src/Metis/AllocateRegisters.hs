@@ -3,6 +3,7 @@
 {-# LANGUAGE RecursiveDo #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -Wno-ambiguous-fields #-}
@@ -18,16 +19,18 @@ module Metis.AllocateRegisters (
   -- allocateRegistersCompound_X86_64,
 ) where
 
+import Control.Monad (when)
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.Reader (runReaderT)
 import Control.Monad.Reader.Class (MonadReader, asks)
 import Control.Monad.State.Class (MonadState, gets, modify)
 import Control.Monad.State.Strict (runStateT)
-import Data.Foldable (traverse_)
+import Data.Foldable (foldl', for_, traverse_)
 import qualified Data.HashMap.Lazy as HashMap.Lazy
 import qualified Data.HashMap.Lazy as Lazy (HashMap)
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
+import Data.HashSet (HashSet)
 import qualified Data.HashSet as HashSet
 import Data.Int (Int64)
 import qualified Data.Maybe as Maybe
@@ -36,6 +39,7 @@ import qualified Data.Sequence as Seq
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
+import Foreign (moveArray)
 import GHC.Stack (HasCallStack)
 import qualified Metis.Anf as Anf
 import Metis.Asm (Block (..), BlockAttribute)
@@ -44,8 +48,11 @@ import qualified Metis.Asm.Class as Asm
 import Metis.Isa (
   Add,
   Instruction,
+  Isa (generalPurposeRegisters),
   Memory (..),
+  Mov,
   Op2 (..),
+  Push,
   Register,
   Sub,
   Symbol (..),
@@ -65,6 +72,7 @@ import qualified Metis.Literal as Literal
 import Metis.Liveness (Liveness (..))
 import Metis.Log (MonadLog)
 import qualified Metis.Log as Log
+import Metis.Type (Type)
 import qualified Metis.Type as Type
 
 data Location isa
@@ -117,6 +125,8 @@ lookupSize var varSizes = Maybe.fromMaybe (error $ show var <> " missing from si
 data AllocateRegistersEnv isa = AllocateRegistersEnv
   { labelArgs :: Anf.Var -> Anf.Var
   , labelArgLocations :: Lazy.HashMap Anf.Var (Location isa)
+  , nameTys :: Text -> Type
+  , varTys :: Anf.Var -> Type
   }
 
 lookupLabelArgLocation :: (HasCallStack) => (MonadReader (AllocateRegistersEnv isa) m) => Anf.Var -> m (Location isa)
@@ -280,6 +290,133 @@ freeKills var = do
          in s{available}
     )
 
+data FunctionArguments isa = FunctionArguments
+  { registerFunctionArguments :: [RegisterFunctionArgument isa]
+  -- ^ Arguments that will be passed via register.
+  , stackFunctionArguments :: [StackFunctionArgument isa]
+  -- ^ Arguments that will be passed via stack.
+  }
+
+instance Semigroup (FunctionArguments isa) where
+  (<>) a b =
+    FunctionArguments
+      { registerFunctionArguments = a.registerFunctionArguments <> b.registerFunctionArguments
+      , stackFunctionArguments = a.stackFunctionArguments <> b.stackFunctionArguments
+      }
+
+instance Monoid (FunctionArguments isa) where
+  mempty =
+    FunctionArguments
+      { registerFunctionArguments = mempty
+      , stackFunctionArguments = mempty
+      }
+
+data RegisterFunctionArgument isa = RegisterFunctionArgument
+  { callerSave :: Bool
+  -- ^ The caller needs to save the register when the register's current contents are used after the
+  -- call returns.
+  , src :: Location isa
+  , dest :: Register isa
+  }
+
+data StackFunctionArgument isa = StackFunctionArgument
+  { src :: Location isa
+  , dest :: Memory isa
+  }
+
+{-
+stack argument 3         (16 + size_of(stack argument 1) + size_of(stack argument 2))(%rbp)
+stack argument 2         (16 + size_of(stack argument 1))(%rbp)
+stack argument 1         16(%rbp)
+return address           8(%rbp)
+caller's base pointer    0(%rbp)
+local 1                  (-size_of(local 1))(%rbp)
+local 2                  (-size_of(local 1) - size_of(local 2))(%rbp)
+-}
+setupFunctionArguments ::
+  Seq (Register X86_64) ->
+  HashSet (Register X86_64) ->
+  Seq (Register X86_64) ->
+  [Type] ->
+  [Location X86_64] ->
+  FunctionArguments X86_64
+setupFunctionArguments registersAvailableAtCall registersKilledByCall availableArgumentRegisters argTys argLocations =
+  case Seq.viewl availableArgumentRegisters of
+    register Seq.:< availableArgumentRegisters' ->
+      case (argTys, argLocations) of
+        ([], []) ->
+          mempty
+        (argTy : argTys', argLocation : argLocations') ->
+          ( case Type.callingConventionOf argTy of
+              Type.Register ->
+                FunctionArguments
+                  { registerFunctionArguments =
+                      [ RegisterFunctionArgument
+                          { callerSave =
+                              argLocation /= Register register
+                                && register `notElem` registersAvailableAtCall
+                                && not (register `HashSet.member` registersKilledByCall)
+                          , src = argLocation
+                          , dest = register
+                          }
+                      ]
+                  , stackFunctionArguments = []
+                  }
+              Type.Composite{} -> error "TODO: types with composite calling conventions"
+          )
+            <> setupFunctionArguments
+              registersAvailableAtCall
+              registersKilledByCall
+              availableArgumentRegisters'
+              argTys'
+              argLocations'
+        _ ->
+          error $
+            "argument types and argument locations have different number of elements: "
+              <> show argTys
+              <> ", "
+              <> show argLocations
+    Seq.EmptyL ->
+      setupStackFunctionArguments
+        -- Assumes that 0(%rbp) in the callee's stack frame contains the caller's frame pointer, and 8(%rbp)
+        -- contains the return address.
+        (2 * fromIntegral @Word64 @Int64 Type.pointerSize)
+        argTys
+        argLocations
+
+{-
+The function arguments require all available registers, so the remaining arguments must be passed
+on the stack.
+-}
+setupStackFunctionArguments ::
+  Int64 ->
+  [Type] ->
+  [Location X86_64] ->
+  FunctionArguments X86_64
+setupStackFunctionArguments offset argTys argLocations =
+  case (argTys, argLocations) of
+    ([], []) ->
+      mempty
+    (argTy : argTys', argLocation : argLocations') ->
+      ( case Type.callingConventionOf argTy of
+          Type.Register ->
+            FunctionArguments
+              { registerFunctionArguments = []
+              , stackFunctionArguments = [StackFunctionArgument{src = argLocation, dest = Mem{base = Rbp, offset}}]
+              }
+          Type.Composite{} -> error "TODO: types with composite calling conventions"
+      )
+        <> setupStackFunctionArguments
+          (offset + fromIntegral @Word64 @Int64 (Type.sizeOf argTy))
+          argTys'
+          argLocations'
+    _ ->
+      error $
+        "argument types and argument locations have different number of elements: "
+          <> show argTys
+          <> ", "
+          <> show argLocations
+
 allocateRegistersExpr_X86_64 ::
   (MonadState (AllocateRegistersState X86_64) m, MonadReader (AllocateRegistersEnv X86_64) m, MonadLog m) =>
   HashMap Anf.Var Word64 ->
@@ -316,6 +453,132 @@ allocateRegistersExpr_X86_64 varSizes expr =
       freeKills var
 
       case value of
+        Anf.Call function args -> do
+          functionLocation <- allocateRegistersSimple_X86_64 function
+          argLocations <- traverse allocateRegistersSimple_X86_64 args
+
+          nameTys <- asks (.nameTys)
+          varTys <- asks (.varTys)
+          case Anf.typeOf nameTys varTys function of
+            Type.Fn argTys _retTy -> do
+              registersAvailableAtCall <- gets (.available)
+              registersKilledByCall <- do
+                varLiveness <- lookupLiveness var
+                foldl'
+                  ( \acc location -> case location of
+                      Register register -> HashSet.insert register acc
+                      Stack{} -> acc
+                  )
+                  mempty
+                  <$> traverse lookupLocation (HashSet.toList varLiveness.kills)
+
+              let functionArguments =
+                    setupFunctionArguments
+                      registersAvailableAtCall
+                      registersKilledByCall
+                      (generalPurposeRegisters @X86_64)
+                      argTys
+                      argLocations
+
+              {- problem:
+
+              What if there's a caller-saved register argument that also needs to go into a stack
+              argument?
+
+              ```
+              %c = f(%a, %b, %a)
+              ```
+
+              Assuming we start with `%a -> %rbx` and `%b -> %rcx`, and only have `{%rax, %rbx}` as
+              argument-passing registers, we get:
+
+              ```
+              mov %rbx, %rax
+              mov %rcx, %rbx // wrong! %rbx is overwritten too early.
+              push %rbx
+              push $after
+              push %rbp
+              mov %rsp, %rbp
+              jump $f
+              after:
+              ...
+              ```
+
+              Perhaps the problem is in using `%a` twice. What about:
+
+              ```
+              %a_1, %a_2 = dup(%a)
+              %c = f(%a_1, %b, %a_2)
+              ```
+
+              We can still start with `%a -> %rbx` and `%b -> %rcx`, then `%a_1, a_2 = clone(%a)` gives
+              `%a_1 -> %rbx` and `%a_2 -> dest` where `dest \notin {%rbx, %rcx}`.
+
+              ```
+              mov %rbx, %rax
+              mov %rcx, %rbx
+              push dest
+              push $after
+              push %rbp
+              mov %rsp, %rbp
+              jump $f
+              after:
+              ...
+              ```
+
+              Another situation: `f(%b, %a)`. Assume `%a -> %rax` and `%b -> %rbx`, with no
+              stack-passed arguments.
+
+              ```
+              mov %rbx, %rax
+              mov %rax, %rbx // wrong!
+              push $after
+              push %rbp
+              mov %rsp, %rbp
+              jump $f
+              after:
+              ...
+              ```
+              -}
+              for_ functionArguments.registerFunctionArguments $ \RegisterFunctionArgument{callerSave, src, dest} -> do
+                when callerSave $ emit [push dest]
+                emit
+                  [ case src of
+                      Register register -> mov Op2{src = register, dest}
+                      Stack offset -> mov Op2{src = Mem{base = Rbp, offset}, dest}
+                  ]
+
+              for_ (reverse functionArguments.stackFunctionArguments) $ \StackFunctionArgument{src, dest} -> do
+                emit
+                  [ case src of
+                      Register register -> push register
+                      Stack offset -> push Mem{base = Rbp, offset}
+                  ]
+
+              (label, emitLabel) <- declareLabel "after"
+              emit [push (imm label)]
+
+              emit [push Rbp, mov Op2{src = Rsp, dest = Rbp}]
+
+              emit
+                [ case functionLocation of
+                    Register register ->
+                      jmp register
+                    Stack offset ->
+                      jmp Mem{base = Rbp, offset}
+                ]
+
+              emitLabel
+              {-
+              %rbp popped by callee
+              return address popeed by callee
+              stack function arguments popped by callee
+              -}
+              for_ (reverse functionArguments.registerFunctionArguments) $ \RegisterFunctionArgument{callerSave, src, dest} -> do
+                when callerSave $ emit [pop dest]
+
+              pure _
+            ty -> error $ "trying to call a non-function type: " <> show ty
         Anf.Binop op a b -> do
           let op' :: (Add X86_64 a b, Sub X86_64 a b) => Op2 a b -> Instruction X86_64
               op' =
@@ -417,10 +680,10 @@ allocateRegistersExpr_X86_64 varSizes expr =
           case b of
             Anf.Literal lit -> do
               case aLocation of
-                Stack bOffset ->
-                  emit [op' Op2{src = imm lit, dest = Mem{base = Rbp, offset = bOffset}}]
-                Register bRegister ->
-                  emit [op' Op2{src = imm lit, dest = bRegister}]
+                Stack aOffset ->
+                  emit [op' Op2{src = imm lit, dest = Mem{base = Rbp, offset = aOffset}}]
+                Register aRegister ->
+                  emit [op' Op2{src = imm lit, dest = aRegister}]
             Anf.Var bVar -> do
               bLocation <- lookupLocation bVar
               emit $ case (aLocation, bLocation) of
@@ -441,21 +704,19 @@ allocateRegistersExpr_X86_64 varSizes expr =
 
       allocateRegistersExpr_X86_64 varSizes rest
     Anf.IfThenElse cond then_ else_ rest -> do
-      condLocation <-
+      (condLocation, freeCondLocation) <-
         case cond of
           Anf.Var var ->
-            lookupLocation var
-          Anf.Literal lit ->
-            allocateRegistersLiteral_X86_64 lit
+            (,pure ()) <$> lookupLocation var
+          Anf.Literal lit -> do
+            location <- allocateRegistersLiteral_X86_64 lit
+            pure (location, freeLocation location)
       case condLocation of
         Register register ->
           emit [cmp register (imm @Word64 0)]
         Stack offset ->
           emit [cmp Mem{base = Rbp, offset} (imm @Word64 0)]
-      case cond of
-        Anf.Var{} -> pure ()
-        Anf.Literal{} ->
-          freeLocation condLocation
+      freeCondLocation
 
       (_thenLabel, beginThen) <- declareLabel "then"
       (elseLabel, beginElse) <- declareLabel "else"

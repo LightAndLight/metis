@@ -25,6 +25,7 @@ module Metis.Isa (
   Xor (..),
 ) where
 
+import Data.Hashable (Hashable)
 import Data.Int (Int64)
 import Data.Kind (Type)
 import Data.Sequence (Seq)
@@ -32,7 +33,7 @@ import Data.Text (Text)
 import Data.Word (Word64)
 import Metis.Literal (Literal (..))
 
-class (Eq (Register isa), Show (Register isa)) => Isa isa where
+class (Eq (Register isa), Show (Register isa), Hashable (Register isa)) => Isa isa where
   data Register isa :: Type
   data Instruction isa :: Type
 
@@ -40,7 +41,9 @@ class (Eq (Register isa), Show (Register isa)) => Isa isa where
 
   generalPurposeRegisters :: Seq (Register isa)
 
-newtype Immediate = Imm Word64
+data Immediate
+  = Number Word64
+  | Label Symbol
 
 class ToImmediate a where
   imm :: a -> Immediate
@@ -48,11 +51,14 @@ class ToImmediate a where
 instance ToImmediate Literal where
   imm lit =
     case lit of
-      Uint64 i -> Imm (fromIntegral i)
-      Bool b -> if b then Imm 1 else Imm 0
+      Uint64 i -> Number (fromIntegral i)
+      Bool b -> if b then Number 1 else Number 0
 
 instance ToImmediate Word64 where
-  imm = Imm
+  imm = Number
+
+instance ToImmediate Symbol where
+  imm = Label
 
 data Memory isa = Mem {base :: Register isa, offset :: Int64}
 

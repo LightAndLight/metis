@@ -8,6 +8,7 @@ module Metis.Anf (
   Var (..),
   VarInfo (..),
   Simple (..),
+  typeOf,
   Compound (..),
   Binop (..),
   ExprInfo (..),
@@ -38,6 +39,7 @@ import Data.Text (Text)
 import Data.Word (Word64)
 import qualified Metis.Core as Core
 import Metis.Literal (Literal)
+import qualified Metis.Literal as Literal
 import Metis.Type (Type)
 import qualified Metis.Type as Type
 
@@ -55,6 +57,13 @@ data Simple
   | Name Text
   | Literal Literal
   deriving (Show, Eq)
+
+typeOf :: (Text -> Type) -> (Var -> Type) -> Simple -> Type
+typeOf nameTys varTys simple =
+  case simple of
+    Var var -> varTys var
+    Name name -> nameTys name
+    Literal lit -> Literal.typeOf lit
 
 data Compound
   = Binop Binop Simple Simple

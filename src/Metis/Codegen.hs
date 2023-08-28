@@ -21,7 +21,10 @@ printRegister :: (Isa isa) => Register isa -> Builder
 printRegister reg = "%" <> Builder.fromText (registerName reg)
 
 printImmediate :: Immediate -> Builder
-printImmediate (Imm i) = "$" <> Builder.fromString (show i)
+printImmediate imm =
+  "$" <> case imm of
+    Number i -> Builder.fromString (show i)
+    Label l -> Builder.fromText l.value
 
 printMemory :: (Isa isa) => Memory isa -> Builder
 printMemory Mem{base, offset} = Builder.fromString (show offset) <> "(" <> printRegister base <> ")"
@@ -40,6 +43,10 @@ printInstruction_X86_64 inst =
   case inst of
     Push_r reg ->
       "push " <> printRegister reg
+    Push_m mem ->
+      "push " <> printMemory mem
+    Push_i imm ->
+      "push " <> printImmediate imm
     Pop_r reg ->
       "pop " <> printRegister reg
     Call_s sym ->
@@ -48,6 +55,10 @@ printInstruction_X86_64 inst =
       "je " <> printSymbol sym
     Jmp_s sym ->
       "jmp " <> printSymbol sym
+    Jmp_r reg ->
+      "jmp *" <> printRegister reg
+    Jmp_m mem ->
+      "jmp *" <> printMemory mem
     Inst2_ir inst2 op2 ->
       -- AT&T syntax
       printInst2 inst2 <> " " <> printImmediate op2.src <> ", " <> printRegister op2.dest

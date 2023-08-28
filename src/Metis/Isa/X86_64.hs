@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedLists #-}
@@ -5,6 +6,8 @@
 
 module Metis.Isa.X86_64 (X86_64, Register (..), Instruction (..), Inst2 (..)) where
 
+import Data.Hashable (Hashable)
+import GHC.Generics (Generic)
 import Metis.Isa (
   Add (..),
   Call (..),
@@ -44,14 +47,18 @@ instance Isa X86_64 where
     | R13
     | R14
     | R15
-    deriving (Eq, Show)
+    deriving (Eq, Show, Generic)
 
   data Instruction X86_64
     = Push_r (Register X86_64)
+    | Push_m (Memory X86_64)
+    | Push_i Immediate
     | Pop_r (Register X86_64)
     | Call_s Symbol
     | Je_s Symbol
     | Jmp_s Symbol
+    | Jmp_r (Register X86_64)
+    | Jmp_m (Memory X86_64)
     | Inst2_ir Inst2 (Op2 Immediate (Register X86_64))
     | Inst2_im Inst2 (Op2 Immediate (Memory X86_64))
     | Inst2_rr Inst2 (Op2 (Register X86_64) (Register X86_64))
@@ -98,6 +105,8 @@ instance Isa X86_64 where
     , R15
     ]
 
+instance Hashable (Register X86_64)
+
 data Inst2
   = Mov
   | Add
@@ -135,10 +144,15 @@ instance Cmp X86_64 (Register X86_64) Immediate where cmp = Cmp_ri
 instance Cmp X86_64 (Memory X86_64) Immediate where cmp = Cmp_mi
 
 instance Push X86_64 (Register X86_64) where push = Push_r
+instance Push X86_64 (Memory X86_64) where push = Push_m
+instance Push X86_64 Immediate where push = Push_i
 
 instance Pop X86_64 (Register X86_64) where pop = Pop_r
 
 instance Call X86_64 Symbol where call = Call_s
 
 instance Je X86_64 Symbol where je = Je_s
+
 instance Jmp X86_64 Symbol where jmp = Jmp_s
+instance Jmp X86_64 (Register X86_64) where jmp = Jmp_r
+instance Jmp X86_64 (Memory X86_64) where jmp = Jmp_m
