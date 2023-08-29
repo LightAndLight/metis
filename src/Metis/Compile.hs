@@ -24,13 +24,13 @@ import qualified Data.Text.Lazy.Builder as Builder
 import qualified Data.Text.Lazy.IO as Text.Lazy.IO
 import Data.Void (Void, absurd)
 import Data.Word (Word64)
-import Metis.AllocateRegisters (Location (..), allocateRegisters_X86_64)
 import qualified Metis.Anf as Anf
 import qualified Metis.Asm as Asm
 import qualified Metis.Asm.Builder as Asm (runAsmBuilderT)
 import qualified Metis.Asm.Class as Asm (block, string)
 import Metis.Codegen (printInstruction_X86_64)
 import qualified Metis.Core as Core
+import Metis.InstSelection (Location (..), instSelection_X86_64)
 import Metis.Isa (Memory (..), Op2 (..), Symbol (..), call, generalPurposeRegisters, imm, lea, mov, xor)
 import Metis.Isa.X86_64 (Register (..), X86_64)
 import qualified Metis.Liveness as Liveness
@@ -148,7 +148,7 @@ compile buildDir nameTys expr outPath = do
   asm <- fmap (Asm.printAsm printInstruction_X86_64) . Asm.runAsmBuilderT $ do
     resultLocation <-
       noLogging $
-        allocateRegisters_X86_64
+        instSelection_X86_64
           nameTys
           (generalPurposeRegisters @X86_64)
           anfInfo

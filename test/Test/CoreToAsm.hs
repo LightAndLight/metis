@@ -13,12 +13,12 @@ import qualified Data.Text.Lazy as Text.Lazy
 import Data.Text.Lazy.Builder (Builder)
 import qualified Data.Text.Lazy.Builder as Text.Lazy.Builder
 import Data.Void (Void, absurd)
-import Metis.AllocateRegisters (allocateRegisters_X86_64)
 import qualified Metis.Anf as Anf
 import Metis.Asm (printAsm)
 import Metis.Asm.Builder (runAsmBuilderT)
 import Metis.Codegen (printInstruction_X86_64)
 import Metis.Core (Expr (..))
+import Metis.InstSelection (instSelection_X86_64)
 import Metis.Isa (generalPurposeRegisters)
 import Metis.Isa.X86_64 (Register (..), X86_64)
 import qualified Metis.Literal as Literal
@@ -48,7 +48,7 @@ testCase TestCase{title, expr, availableRegisters, expectedOutput} =
     let liveness = Liveness.liveness anf
     asm <- fmap (Text.Lazy.Builder.toLazyText . printAsm printInstruction_X86_64) . runAsmBuilderT . noLogging $ do
       let nameTys = const undefined
-      _ <- allocateRegisters_X86_64 nameTys availableRegisters anfInfo anf liveness "main" []
+      _ <- instSelection_X86_64 nameTys availableRegisters anfInfo anf liveness "main" []
       pure ()
     asm `shouldBe` Text.Lazy.Builder.toLazyText (foldMap @[] (<> "\n") expectedOutput)
 
