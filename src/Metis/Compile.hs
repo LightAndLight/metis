@@ -30,7 +30,7 @@ import qualified Metis.Asm.Builder as Asm (runAsmBuilderT)
 import qualified Metis.Asm.Class as Asm (block, string)
 import Metis.Codegen (printInstruction_X86_64)
 import qualified Metis.Core as Core
-import Metis.InstSelection (Location (..), instSelection_X86_64)
+import Metis.InstSelection (Location (..), Value (..), instSelection_X86_64)
 import Metis.Isa (Memory (..), Op2 (..), Symbol (..), call, generalPurposeRegisters, imm, lea, mov, xor)
 import Metis.Isa.X86_64 (Register (..), X86_64)
 import qualified Metis.Liveness as Liveness
@@ -146,7 +146,7 @@ compile buildDir nameTys expr outPath = do
   let (anfInfo, anf) = Anf.fromCore absurd expr
   let liveness = Liveness.liveness anf
   asm <- fmap (Asm.printAsm printInstruction_X86_64) . Asm.runAsmBuilderT $ do
-    resultLocation <-
+    resultValue <-
       noLogging $
         instSelection_X86_64
           nameTys
@@ -162,9 +162,10 @@ compile buildDir nameTys expr outPath = do
         "print_and_exit"
         []
         [ lea Op2{src = formatString, dest = Rdi}
-        , case resultLocation of
-            Register register -> mov Op2{src = register, dest = Rsi}
-            Stack offset -> mov Op2{src = Mem{base = Rbp, offset}, dest = Rsi}
+        , case resultValue of
+            ValueAt (Register register) -> mov Op2{src = register, dest = Rsi}
+            ValueAt (Stack offset) -> mov Op2{src = Mem{base = Rbp, offset}, dest = Rsi}
+            Address symbol -> mov Op2{src = imm symbol, dest = Rsi}
         , xor Op2{src = Rax, dest = Rax}
         , call (Symbol "printf")
         , mov Op2{src = imm (0 :: Word64), dest = Rdi}

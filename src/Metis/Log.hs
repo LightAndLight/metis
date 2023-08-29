@@ -6,8 +6,8 @@
 
 module Metis.Log (
   MonadLog (..),
-  WithLoggingT,
-  withLogging,
+  HandleLoggingT,
+  handleLogging,
   NoLoggingT,
   noLogging,
 ) where
@@ -22,7 +22,7 @@ import Control.Monad.Trans.Class (MonadTrans, lift)
 import Data.Text (Text)
 import qualified Data.Text.IO as Text.IO
 import Metis.Asm.Class (MonadAsm)
-import qualified System.IO
+import System.IO (Handle)
 
 class (Monad m) => MonadLog m where
   trace :: Text -> m ()
@@ -36,21 +36,21 @@ instance (MonadLog m) => MonadLog (Control.Monad.State.Lazy.StateT s m) where
 instance (MonadLog m) => MonadLog (Control.Monad.Reader.ReaderT r m) where
   trace = lift . trace
 
-newtype WithLoggingT m a = WithLoggingT {value :: ReaderT (Text -> IO ()) m a}
+newtype HandleLoggingT m a = HandleLoggingT {value :: ReaderT Handle m a}
   deriving (Functor, Applicative, Monad, MonadFix)
 
-withLogging :: WithLoggingT m a -> m a
-withLogging ma = runReaderT ma.value (liftIO . Text.IO.hPutStrLn System.IO.stderr)
+handleLogging :: Handle -> HandleLoggingT m a -> m a
+handleLogging handle ma = runReaderT ma.value handle
 
-instance MonadTrans WithLoggingT where
-  lift = WithLoggingT . lift
+instance MonadTrans HandleLoggingT where
+  lift = HandleLoggingT . lift
 
-instance (MonadIO m) => MonadLog (WithLoggingT m) where
-  trace s = WithLoggingT $ do
-    f <- ask
-    liftIO $ f s
+instance (MonadIO m) => MonadLog (HandleLoggingT m) where
+  trace s = HandleLoggingT $ do
+    handle <- ask
+    liftIO $ Text.IO.hPutStrLn handle s
 
-instance (MonadAsm isa m) => MonadAsm isa (WithLoggingT m)
+instance (MonadAsm isa m) => MonadAsm isa (HandleLoggingT m)
 
 newtype NoLoggingT m a = NoLoggingT {value :: m a}
   deriving (Functor, Applicative, Monad, MonadFix)

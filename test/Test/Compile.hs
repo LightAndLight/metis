@@ -1,14 +1,11 @@
-{-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Test.Compile (spec) where
 
-import Control.Applicative ((<|>))
-import Control.Exception (Exception, SomeException, catch, fromException, throwIO)
-import Data.CallStack (SrcLoc, srcLocFile, srcLocStartCol, srcLocStartLine)
+import Control.Exception (SomeException, catch, fromException, throwIO)
 import qualified Data.Text as Text
-import Data.Typeable (Typeable)
+import ErrorReporting (hunitFailureToResult)
 import Metis.Compile (ProgramError (..), ProgramResult (..), Stdin (..), Stdout (..), assemble, compile, runProgram)
 import qualified Metis.Core as Core
 import qualified Metis.Literal as Literal
@@ -20,15 +17,7 @@ import System.IO.Temp (withSystemTempDirectory)
 import qualified Test.HUnit.Lang as HUnit
 import Test.Hspec (Spec, describe, it, shouldBe)
 import Test.Hspec.Core.Format (FailureReason (..))
-import Test.Hspec.Core.Spec (Location (..), ResultStatus (..))
-
-data ExceptionWithSnapshot = ExceptionWithSnapshot String SomeException
-  deriving (Typeable)
-
-instance Show ExceptionWithSnapshot where
-  show (ExceptionWithSnapshot message exception) = message <> "\n\n" <> show exception
-
-instance Exception ExceptionWithSnapshot
+import Test.Hspec.Core.Spec (ResultStatus (..))
 
 withTempDir :: FilePath -> (FilePath -> IO a) -> IO a
 withTempDir template m =
@@ -99,29 +88,3 @@ spec =
         result <- runProgram outPath [] NoStdin CaptureStdout
 
         result `shouldBe` Right ProgramResult{stdout = "18\n"}
-
--- the following code is taken from [`hspec-core`](https://github.com/hspec/hspec/blob/5e1fb3bb510883f7712b8d80ac377906ddf5f694/hspec-core/src/Test/Hspec/Core/Example.hs#L159).
-
-hunitFailureToResult :: Maybe String -> HUnit.HUnitFailure -> ResultStatus
-hunitFailureToResult pre e = case e of
-  HUnit.HUnitFailure mLoc err ->
-    case err of
-      HUnit.Reason reason -> Failure location (Reason $ addPre reason)
-      HUnit.ExpectedButGot preface expected actual -> Failure location (ExpectedButGot (addPreMaybe preface) expected actual)
-        where
-          addPreMaybe :: Maybe String -> Maybe String
-          addPreMaybe xs = case (pre, xs) of
-            (Just x, Just y) -> Just (x ++ "\n" ++ y)
-            _ -> pre <|> xs
-    where
-      location = case mLoc of
-        Nothing -> Nothing
-        Just loc -> Just $ toLocation loc
-  where
-    addPre :: String -> String
-    addPre xs = case pre of
-      Just x -> x ++ "\n" ++ xs
-      Nothing -> xs
-
-toLocation :: SrcLoc -> Location
-toLocation loc = Location (srcLocFile loc) (srcLocStartLine loc) (srcLocStartCol loc)

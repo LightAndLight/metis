@@ -6,6 +6,7 @@
 module Metis.Asm.Builder (AsmBuilderT, runAsmBuilderT) where
 
 import Control.Monad.Fix (MonadFix)
+import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.State.Strict (StateT, execStateT, gets, modify)
 import qualified Data.Text as Text
 import Data.Word (Word64)
@@ -22,7 +23,7 @@ initialAsmBuilderState :: AsmBuilderState isa
 initialAsmBuilderState = AsmBuilderState{nextString = 0, asm = Asm{data_ = [], text = []}}
 
 newtype AsmBuilderT isa m a = AsmBuilderT {value :: StateT (AsmBuilderState isa) m a}
-  deriving (Functor, Applicative, Monad, MonadFix)
+  deriving (Functor, Applicative, Monad, MonadFix, MonadIO)
 
 runAsmBuilderT :: (Monad m) => AsmBuilderT isa m () -> m (Asm isa)
 runAsmBuilderT ma = do

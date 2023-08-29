@@ -111,3 +111,26 @@ spec =
                    , (Anf.MkVar 2, Liveness{kills = []})
                    , (Anf.MkVar 3, Liveness{kills = [Anf.MkVar 0, Anf.MkVar 2]})
                    ]
+    it "let x = 1; let y = 2; let z = f(y, x); x + z" $ do
+      let
+        expr =
+          Let Type.Uint64 (Just "x") Type.Uint64 (Literal $ Literal.Uint64 1) . toScope $
+            Let Type.Uint64 (Just "y") Type.Uint64 (Literal $ Literal.Uint64 2) . toScope $
+              Let Type.Uint64 (Just "z") Type.Uint64 (Call Type.Uint64 (Name "f") [Var $ B (), Var . F $ B ()]) . toScope $
+                Add Type.Uint64 (Var . F . F $ B ()) (Var $ B ())
+
+      {-
+      %0 = 1
+      %1 = 2
+      %2 = f(%1, %0)
+      %3 = %0 + %2
+      -}
+      let (_info, anf) = Anf.fromCore absurd expr
+      let liveness = Liveness.liveness anf
+
+      liveness
+        `shouldBe` [ (Anf.MkVar 0, Liveness{kills = []})
+                   , (Anf.MkVar 1, Liveness{kills = []})
+                   , (Anf.MkVar 2, Liveness{kills = [Anf.MkVar 1]})
+                   , (Anf.MkVar 3, Liveness{kills = [Anf.MkVar 0, Anf.MkVar 2]})
+                   ]

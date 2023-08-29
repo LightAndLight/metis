@@ -13,6 +13,7 @@ module Metis.InstSelection (
 
   -- * Internals
   Location (..),
+  Value (..),
   InstSelectionState (..),
   initialInstSelectionState,
   instSelectionExpr_X86_64,
@@ -20,12 +21,11 @@ module Metis.InstSelection (
   moveRegisterFunctionArguments,
 ) where
 
-import Control.Monad (when)
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.Reader (runReaderT)
 import Control.Monad.Reader.Class (MonadReader, asks)
 import Control.Monad.State.Class (MonadState, gets, modify)
-import Control.Monad.State.Strict (runStateT)
+import Control.Monad.State.Strict (State, runState, runStateT)
 import Data.Foldable (foldl', for_, traverse_)
 import qualified Data.HashMap.Lazy as HashMap.Lazy
 import qualified Data.HashMap.Lazy as Lazy (HashMap)
@@ -72,6 +72,7 @@ import Metis.Log (MonadLog)
 import qualified Metis.Log as Log
 import Metis.Type (Type)
 import qualified Metis.Type as Type
+import Witherable (forMaybe, wither)
 
 data Location isa
   = Register (Register isa)
@@ -79,6 +80,13 @@ data Location isa
 
 deriving instance (Show (Register isa)) => Show (Location isa)
 deriving instance (Eq (Register isa)) => Eq (Location isa)
+
+data Value isa
+  = ValueAt (Location isa)
+  | Address Symbol
+
+deriving instance (Show (Register isa)) => Show (Value isa)
+deriving instance (Eq (Register isa)) => Eq (Value isa)
 
 data InstSelectionState isa = InstSelectionState
   { nextStackOffset :: Int64
@@ -161,6 +169,7 @@ declareLabel value = do
                           }
                        ]
               , currentBlockName = value
+              , currentBlockAttributes = []
               , currentBlockInstructions = []
               }
         )
@@ -184,6 +193,7 @@ beginBlock label =
                         }
                      ]
             , currentBlockName = label
+            , currentBlockAttributes = []
             , currentBlockInstructions = []
             }
       )
@@ -224,7 +234,7 @@ instSelection_X86_64 ::
   HashMap Anf.Var Liveness ->
   Text ->
   [BlockAttribute] ->
-  m (Location X86_64)
+  m (Value X86_64)
 instSelection_X86_64 nameTys available exprInfo expr liveness blockName blockAttributes = do
   rec (a, s) <-
         runStateT
@@ -259,29 +269,33 @@ instSelectionLiteral_X86_64 lit = do
 instSelectionSimple_X86_64 ::
   (MonadState (InstSelectionState X86_64) m, MonadLog m) =>
   Anf.Simple ->
-  m (Location X86_64)
+  m (Value X86_64)
 instSelectionSimple_X86_64 simple =
   case simple of
     Anf.Var var ->
-      lookupLocation var
+      ValueAt <$> lookupLocation var
     Anf.Literal lit ->
-      instSelectionLiteral_X86_64 lit
+      ValueAt <$> instSelectionLiteral_X86_64 lit
     Anf.Name name ->
-      error "TODO: instSelectionSimple_X86_64/Name" name
+      pure $ Address Symbol{value = name}
 
-freeKills :: (MonadState (InstSelectionState isa) m, MonadLog m) => Anf.Var -> m ()
+freeKills :: (Isa isa, MonadState (InstSelectionState isa) m, MonadLog m) => Anf.Var -> m ()
 freeKills var = do
   liveness <- lookupLiveness var
   Log.trace . Text.pack $ show var <> " kills " <> show liveness.kills
 
+  locations <- gets (.locations)
+  let freed =
+        HashMap.Lazy.foldrWithKey'
+          (\k v acc -> if k `HashSet.member` liveness.kills then v : acc else acc)
+          []
+          locations
+  Log.trace . Text.pack $ "freed: " <> show freed
+
   modify
     ( \s ->
-        let freed =
-              HashMap.Lazy.foldrWithKey'
-                (\k v acc -> if k `HashSet.member` liveness.kills then v : acc else acc)
-                []
-                s.locations
-            available =
+        s
+          { available =
               foldr
                 ( \location acc ->
                     case location of
@@ -290,7 +304,7 @@ freeKills var = do
                 )
                 s.available
                 freed
-         in s{available}
+          }
     )
 
 data FunctionArguments isa = FunctionArguments
@@ -315,16 +329,13 @@ instance Monoid (FunctionArguments isa) where
       }
 
 data RegisterFunctionArgument isa = RegisterFunctionArgument
-  { callerSave :: Bool
-  -- ^ The caller needs to save the register when the register's current contents are used after the
-  -- call returns.
-  , size :: Word64
-  , src :: Location isa
+  { size :: Word64
+  , src :: Value isa
   , dest :: Register isa
   }
 
 data StackFunctionArgument isa = StackFunctionArgument
-  { src :: Location isa
+  { src :: Value isa
   , dest :: Memory isa
   }
 
@@ -332,19 +343,17 @@ data StackFunctionArgument isa = StackFunctionArgument
 stack argument 3         (16 + size_of(stack argument 1) + size_of(stack argument 2))(%rbp)
 stack argument 2         (16 + size_of(stack argument 1))(%rbp)
 stack argument 1         16(%rbp)
-return address           8(%rbp)
-caller's base pointer    0(%rbp)
+caller's base pointer    8(%rbp)
+return address           0(%rbp)
 local 1                  (-size_of(local 1))(%rbp)
 local 2                  (-size_of(local 1) - size_of(local 2))(%rbp)
 -}
 setupFunctionArguments ::
   Seq (Register X86_64) ->
-  HashSet (Register X86_64) ->
-  Seq (Register X86_64) ->
   [Type] ->
-  [Location X86_64] ->
+  [Value X86_64] ->
   FunctionArguments X86_64
-setupFunctionArguments registersAvailableAtCall registersKilledByCall availableArgumentRegisters argTys argLocations =
+setupFunctionArguments availableArgumentRegisters argTys argLocations =
   case Seq.viewl availableArgumentRegisters of
     register Seq.:< availableArgumentRegisters' ->
       case (argTys, argLocations) of
@@ -356,11 +365,7 @@ setupFunctionArguments registersAvailableAtCall registersKilledByCall availableA
                 FunctionArguments
                   { registerFunctionArguments =
                       [ RegisterFunctionArgument
-                          { callerSave =
-                              argLocation /= Register register
-                                && register `notElem` registersAvailableAtCall
-                                && not (register `HashSet.member` registersKilledByCall)
-                          , size = Type.sizeOf argTy
+                          { size = Type.sizeOf argTy
                           , src = argLocation
                           , dest = register
                           }
@@ -370,8 +375,6 @@ setupFunctionArguments registersAvailableAtCall registersKilledByCall availableA
               Type.Composite{} -> error "TODO: types with composite calling conventions"
           )
             <> setupFunctionArguments
-              registersAvailableAtCall
-              registersKilledByCall
               availableArgumentRegisters'
               argTys'
               argLocations'
@@ -383,8 +386,8 @@ setupFunctionArguments registersAvailableAtCall registersKilledByCall availableA
               <> show argLocations
     Seq.EmptyL ->
       setupStackFunctionArguments
-        -- Assumes that 0(%rbp) in the callee's stack frame contains the caller's frame pointer, and 8(%rbp)
-        -- contains the return address.
+        -- Assumes that 0(%rbp) in the callee's stack frame contains the return address, and 8(%rbp)
+        -- contains the caller's frame pointer.
         (2 * fromIntegral @Word64 @Int64 Type.pointerSize)
         argTys
         argLocations
@@ -396,7 +399,7 @@ on the stack.
 setupStackFunctionArguments ::
   Int64 ->
   [Type] ->
-  [Location X86_64] ->
+  [Value X86_64] ->
   FunctionArguments X86_64
 setupStackFunctionArguments offset argTys argLocations =
   case (argTys, argLocations) of
@@ -491,69 +494,75 @@ moveRegisterFunctionArguments ::
   HashMap (Register X86_64) (Location X86_64) ->
   [RegisterFunctionArgument X86_64] ->
   m [Instruction X86_64]
-moveRegisterFunctionArguments registerRemapping arguments =
-  case arguments of
-    [] ->
-      pure []
-    [RegisterFunctionArgument{callerSave, size = _, src, dest}] -> do
-      let pushDest = [push dest | callerSave]
+moveRegisterFunctionArguments registerRemapping arguments = do
+  -- Any registers allocated here temporary; they will all be returned to the pool at the end of the function.
+  available <- gets (.available)
 
-      b <-
+  insts <-
+    case arguments of
+      [] ->
+        pure []
+      [RegisterFunctionArgument{size = _, src, dest}] ->
         case src of
-          Register srcRegister ->
+          ValueAt (Register srcRegister) ->
             case HashMap.lookup srcRegister registerRemapping of
               Nothing ->
                 pure [mov Op2{src = srcRegister, dest} | srcRegister /= dest]
-              Just srcRegisterRemapped -> do
-                let a =
-                      [ case srcRegisterRemapped of
-                        Register srcRegisterRemappedRegister ->
-                          mov Op2{src = srcRegisterRemappedRegister, dest}
-                        Stack srcRegisterRemappedOffset ->
-                          mov Op2{src = Mem{base = Rbp, offset = srcRegisterRemappedOffset}, dest}
-                      | srcRegisterRemapped /= Register dest
-                      ]
-                freeLocation srcRegisterRemapped
-                pure a
-          Stack srcOffset ->
+              Just srcRegisterRemapped ->
+                pure
+                  [ case srcRegisterRemapped of
+                    Register srcRegisterRemappedRegister ->
+                      mov Op2{src = srcRegisterRemappedRegister, dest}
+                    Stack srcRegisterRemappedOffset ->
+                      mov Op2{src = Mem{base = Rbp, offset = srcRegisterRemappedOffset}, dest}
+                  | srcRegisterRemapped /= Register dest
+                  ]
+          ValueAt (Stack srcOffset) ->
             pure [mov Op2{src = Mem{base = Rbp, offset = srcOffset}, dest}]
+          Address symbol ->
+            pure [mov Op2{src = imm symbol, dest}]
+      RegisterFunctionArgument{size, src, dest} : arguments' -> do
+        temp <- allocLocation size
+        a <-
+          case src of
+            ValueAt (Register srcRegister) ->
+              case HashMap.lookup srcRegister registerRemapping of
+                Nothing ->
+                  pure $
+                    if srcRegister == dest
+                      then []
+                      else
+                        saveDestination temp dest
+                          <> [mov Op2{src = srcRegister, dest}]
+                Just srcRegisterRemapped -> do
+                  let a =
+                        if srcRegisterRemapped == Register dest
+                          then []
+                          else
+                            saveDestination temp dest
+                              <> [ case srcRegisterRemapped of
+                                    Register srcRegisterRemappedRegister ->
+                                      mov Op2{src = srcRegisterRemappedRegister, dest}
+                                    Stack srcRegisterRemappedOffset ->
+                                      mov Op2{src = Mem{base = Rbp, offset = srcRegisterRemappedOffset}, dest}
+                                 ]
+                  -- Even though the temporary registers are all freed at the end of this function,
+                  -- they are freed incrementally so that the function uses a smaller set of
+                  -- temporary registers.
+                  freeLocation srcRegisterRemapped
+                  pure a
+            ValueAt (Stack srcOffset) ->
+              pure $ saveDestination temp dest <> [mov Op2{src = Mem{base = Rbp, offset = srcOffset}, dest}]
+            Address symbol ->
+              pure $ saveDestination temp dest <> [mov Op2{src = imm symbol, dest}]
 
-      pure $ pushDest <> b
-    RegisterFunctionArgument{callerSave, size, src, dest} : arguments' -> do
-      let pushDest = [push dest | callerSave]
+        b <- moveRegisterFunctionArguments (HashMap.insert dest temp registerRemapping) arguments'
 
-      temp <- allocLocation size
-      a <-
-        case src of
-          Register srcRegister ->
-            case HashMap.lookup srcRegister registerRemapping of
-              Nothing ->
-                pure $
-                  if srcRegister == dest
-                    then []
-                    else
-                      saveDestination temp dest
-                        <> [mov Op2{src = srcRegister, dest}]
-              Just srcRegisterRemapped -> do
-                let a =
-                      if srcRegisterRemapped == Register dest
-                        then []
-                        else
-                          saveDestination temp dest
-                            <> [ case srcRegisterRemapped of
-                                  Register srcRegisterRemappedRegister ->
-                                    mov Op2{src = srcRegisterRemappedRegister, dest}
-                                  Stack srcRegisterRemappedOffset ->
-                                    mov Op2{src = Mem{base = Rbp, offset = srcRegisterRemappedOffset}, dest}
-                               ]
-                freeLocation srcRegisterRemapped
-                pure a
-          Stack srcOffset ->
-            pure $ saveDestination temp dest <> [mov Op2{src = Mem{base = Rbp, offset = srcOffset}, dest}]
+        pure $ a <> b
 
-      b <- moveRegisterFunctionArguments (HashMap.insert dest temp registerRemapping) arguments'
+  modify (\s -> s{available})
 
-      pure $ pushDest <> a <> b
+  pure insts
   where
     saveDestination temp dest =
       [ case temp of
@@ -563,11 +572,34 @@ moveRegisterFunctionArguments registerRemapping arguments =
             mov Op2{src = dest, dest = Mem{base = Rbp, offset = tempOffset}}
       ]
 
+getRegistersUsedByFunction :: forall isa. (Isa isa) => Seq (Register isa) -> [Type] -> Type -> HashSet (Register isa)
+getRegistersUsedByFunction registerPool argTys retTy =
+  let
+    ((), (_, toSave)) = runState (traverse_ goType argTys) (registerPool, mempty)
+    ((), (_, toSave')) = runState (goType retTy) (registerPool, toSave)
+   in
+    toSave'
+  where
+    goType :: Type -> State (Seq (Register isa), HashSet (Register isa)) ()
+    goType ty = goCallingConvention (Type.callingConventionOf ty)
+
+    goCallingConvention :: Type.CallingConvention -> State (Seq (Register isa), HashSet (Register isa)) ()
+    goCallingConvention cc =
+      case cc of
+        Type.Register -> do
+          availableRegisters <- gets fst
+          case Seq.viewl availableRegisters of
+            Seq.EmptyL -> pure mempty
+            register Seq.:< availableRegisters' ->
+              modify $ \(_, toSave) -> (availableRegisters', HashSet.insert register toSave)
+        Type.Composite ccs ->
+          traverse_ goCallingConvention ccs
+
 instSelectionExpr_X86_64 ::
   (MonadState (InstSelectionState X86_64) m, MonadReader (InstSelectionEnv X86_64) m, MonadLog m) =>
   HashMap Anf.Var Word64 ->
   Anf.Expr ->
-  m (Location X86_64)
+  m (Value X86_64)
 instSelectionExpr_X86_64 varSizes expr =
   case expr of
     Anf.Return simple ->
@@ -598,8 +630,6 @@ instSelectionExpr_X86_64 varSizes expr =
       Log.trace . Text.pack $ "  var: " <> show var
       Log.trace . Text.pack $ "  value: " <> show value
 
-      freeKills var
-
       case value of
         Anf.Call function args -> do
           functionLocation <- instSelectionSimple_X86_64 function
@@ -608,22 +638,31 @@ instSelectionExpr_X86_64 varSizes expr =
           nameTys <- asks (.nameTys)
           varTys <- asks (.varTys)
           case Anf.typeOf nameTys varTys function of
-            Type.Fn argTys _retTy -> do
-              registersAvailableAtCall <- gets (.available)
+            Type.Fn argTys retTy -> do
+              registersAvailableAtCall <- foldl' (flip HashSet.insert) mempty <$> gets (.available)
               registersKilledByCall <- do
-                varLiveness <- lookupLiveness var
-                foldl'
-                  ( \acc location -> case location of
-                      Register register -> HashSet.insert register acc
-                      Stack{} -> acc
-                  )
-                  mempty
-                  <$> traverse lookupLocation (HashSet.toList varLiveness.kills)
+                liveness <- lookupLiveness var
+                HashSet.fromList
+                  <$> wither
+                    ( \killedVar -> do
+                        location <- lookupLocation killedVar
+                        case location of
+                          Register register -> pure $ Just register
+                          Stack{} -> pure Nothing
+                    )
+                    (HashSet.toList liveness.kills)
+              let registersUsedByFunction = getRegistersUsedByFunction (generalPurposeRegisters @X86_64) argTys retTy
+
+              callerSavedRegisters <-
+                forMaybe (generalPurposeRegisters @X86_64) $ \register ->
+                  if not (register `HashSet.member` registersAvailableAtCall)
+                    && not (register `HashSet.member` registersKilledByCall)
+                    && register `HashSet.member` registersUsedByFunction
+                    then Just register <$ emit [push register]
+                    else pure Nothing
 
               let functionArguments =
                     setupFunctionArguments
-                      registersAvailableAtCall
-                      registersKilledByCall
                       (generalPurposeRegisters @X86_64)
                       argTys
                       argLocations
@@ -633,35 +672,65 @@ instSelectionExpr_X86_64 varSizes expr =
               for_ (reverse functionArguments.stackFunctionArguments) $ \StackFunctionArgument{src, dest = _} -> do
                 emit
                   [ case src of
-                      Register register -> push register
-                      Stack offset -> push Mem{base = Rbp, offset}
+                      ValueAt (Register register) -> push register
+                      ValueAt (Stack offset) -> push Mem{base = Rbp, offset}
+                      Address symbol -> push (imm symbol)
                   ]
 
+              -- TODO: allocate space for outputs that are passed via stack
+
               (label, emitLabel) <- declareLabel "after"
+              emit [push Rbp]
               emit [push (imm label)]
-
-              emit [push Rbp, mov Op2{src = Rsp, dest = Rbp}]
-
+              emit [mov Op2{src = Rsp, dest = Rbp}]
               emit
                 [ case functionLocation of
-                    Register register ->
+                    ValueAt (Register register) ->
                       jmp register
-                    Stack offset ->
+                    ValueAt (Stack offset) ->
                       jmp Mem{base = Rbp, offset}
+                    Address symbol ->
+                      jmp symbol
                 ]
 
               emitLabel
-              {-
-              %rbp popped by callee
-              return address popeed by callee
-              stack function arguments popped by callee
-              -}
-              for_ (reverse functionArguments.registerFunctionArguments) $ \RegisterFunctionArgument{callerSave, src = _, dest} -> do
-                when callerSave $ emit [pop dest]
+              freeKills var
 
-              pure (error "TODO: call instruction")
+              {- At this point, the callee should have cleaned up. It will have:
+
+              1. Popped all stack function arguments popped
+              2. Popped caller's frame pointer to `%rbp`
+              3. Popped and jumped to return address
+
+              The following code is written under these assumptions.
+              -}
+              case Type.callingConventionOf retTy of
+                Type.Register -> do
+                  location <-
+                    if Rax `HashSet.member` registersAvailableAtCall || Rax `HashSet.member` registersKilledByCall
+                      then do
+                        modify (\s -> s{available = Seq.filter (/= Rax) s.available})
+                        pure $ Register Rax
+                      else do
+                        -- If the register was not available at the call site, then it was
+                        -- caller-saved. We have to move the result to a new register so we can
+                        -- restore the caller-saved register later.
+                        location <- allocLocation $ Type.sizeOf retTy
+                        emit
+                          [ case location of
+                              Register register -> mov Op2{src = Rax, dest = register}
+                              Stack offset -> mov Op2{src = Rax, dest = Mem{base = Rbp, offset}}
+                          ]
+                        pure location
+                  modify (\s -> s{locations = HashMap.insert var location s.locations})
+                Type.Composite{} ->
+                  error "TODO: composite return types"
+
+              for_ (Seq.reverse callerSavedRegisters) $ \register -> emit [pop register]
             ty -> error $ "trying to call a non-function type: " <> show ty
         Anf.Binop op a b -> do
+          freeKills var
+
           let op' :: (Add X86_64 a b, Sub X86_64 a b) => Op2 a b -> Instruction X86_64
               op' =
                 case op of
@@ -829,28 +898,32 @@ instSelectionExpr_X86_64 varSizes expr =
       labelArg <- lookupLabelArg label
       freeKills labelArg
 
-      argLocation <- instSelectionSimple_X86_64 arg
+      argValue <- instSelectionSimple_X86_64 arg
       labelArgLocation <- lookupLabelArgLocation label
       emit $
         -- If we're jumping forward to a label then `labelArgLocation` isn't known yet. It will be
         -- computed when we examine the corresponding block. Therefore we can't `emit` based on
         -- the value of `labelArgLocation`. The inspection of `labelArgLocation` has to be delayed
         -- until after we've examined the whole expression.
-        if argLocation == labelArgLocation
+        if argValue == ValueAt labelArgLocation
           then []
-          else case (argLocation, labelArgLocation) of
-            (Register argRegister, Register labelArgRegister) ->
+          else case (argValue, labelArgLocation) of
+            (ValueAt (Register argRegister), Register labelArgRegister) ->
               [mov Op2{src = argRegister, dest = labelArgRegister}]
-            (Register argRegister, Stack labelArgOffset) ->
+            (ValueAt (Register argRegister), Stack labelArgOffset) ->
               [mov Op2{src = argRegister, dest = Mem{base = Rbp, offset = labelArgOffset}}]
-            (Stack argOffset, Register labelArgRegister) -> do
+            (ValueAt (Stack argOffset), Register labelArgRegister) -> do
               [mov Op2{src = Mem{base = Rbp, offset = argOffset}, dest = labelArgRegister}]
-            (Stack argOffset, Stack labelArgOffset) ->
+            (ValueAt (Stack argOffset), Stack labelArgOffset) ->
               [ push Rax
               , mov Op2{src = Mem{base = Rbp, offset = argOffset}, dest = Rax}
               , mov Op2{src = Rax, dest = Mem{base = Rbp, offset = labelArgOffset}}
               , pop Rax
               ]
+            (Address symbol, Register labelArgRegister) -> do
+              [mov Op2{src = imm symbol, dest = labelArgRegister}]
+            (Address symbol, Stack labelArgOffset) ->
+              [mov Op2{src = imm symbol, dest = Mem{base = Rbp, offset = labelArgOffset}}]
 
       emit [jmp $ Symbol . Text.pack $ "block_" <> show label.value]
       pure undefined -- TODO: How do I remove this undefined? Some tweak to the ANF representation?
