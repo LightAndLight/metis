@@ -22,7 +22,7 @@ spec :: Spec
 spec =
   describe "Test.AllocateRegisters" $ do
     describe "moveRegisterFunctionArguments" $ do
-      it "{%rbx, %rax} -> {%rax, %rbx}" $ do
+      it "a @ %rax, b @ %rbx |- f(b, a) : {%rbx, %rax} -> {%rax, %rbx}" $ do
         let result = flip evalState (initialAllocateRegistersState (generalPurposeRegisters @X86_64) mempty "main" [Global]) $ do
               modify (\s -> s{available = Seq.filter (`notElem` [Rax, Rbx]) s.available})
               moveRegisterFunctionArguments
@@ -32,11 +32,40 @@ spec =
                 ]
 
         result
-          `shouldBe` [ mov Op2{src = Rax, dest = Rcx} -- save destination to temporary
-                     , mov Op2{src = Rbx, dest = Rax} -- write value to destination
-                     -- `Rax` should now be considered remapped to `Rcx`
-                     {- No need to save the final destination to a temporary.
-                     , mov Op2{src = Rbx, dest = Rdx} -- save destination to temporary
-                     -}
-                     , mov Op2{src = Rcx {- Rax remapped -}, dest = Rbx} -- write value to destination
+          `shouldBe` [
+                       -- save destination to temporary
+                       mov Op2{src = Rax, dest = Rcx}
+                     , -- write value to destination
+                       mov Op2{src = Rbx, dest = Rax}
+                     , -- `Rax` should now be considered remapped to `Rcx`
+                       {- No need to save the final destination to a temporary.
+                       , mov Op2{src = Rbx, dest = Rdx} -- save destination to temporary
+                       -}
+                       -- write value to destination
+                       mov Op2{src = Rcx {- Rax remapped -}, dest = Rbx}
+                     ]
+      it "a @ %rax, b @ %rbx |- f(b, a, b) : {%rbx, %rax, %rbx} -> {%rax, %rbx, %rcx}" $ do
+        let result = flip evalState (initialAllocateRegistersState (generalPurposeRegisters @X86_64) mempty "main" [Global]) $ do
+              modify (\s -> s{available = Seq.filter (`notElem` [Rax, Rbx]) s.available})
+              moveRegisterFunctionArguments
+                mempty
+                [ RegisterFunctionArgument{callerSave = False, size = 8, src = Register Rbx, dest = Rax}
+                , RegisterFunctionArgument{callerSave = False, size = 8, src = Register Rax, dest = Rbx}
+                , RegisterFunctionArgument{callerSave = False, size = 8, src = Register Rbx, dest = Rcx}
+                ]
+
+        result
+          `shouldBe` [
+                       -- save destination to temporary
+                       mov Op2{src = Rax, dest = Rcx}
+                     , -- write value to destination
+                       mov Op2{src = Rbx, dest = Rax}
+                     , -- `Rax` should now be considered remapped to `Rcx`
+                       -- save destination to temporary
+                       mov Op2{src = Rbx, dest = Rdx}
+                     , -- write value to destination
+                       mov Op2{src = Rcx {- Rax remapped -}, dest = Rbx}
+                     , -- `Rbx` should now be considered remapped to `Rdx`
+                       -- write value to destination
+                       mov Op2{src = Rdx {- Rbx remapped -}, dest = Rcx}
                      ]
