@@ -77,7 +77,8 @@ spec =
         let expr = Core.Add Type.Uint64 (Core.Literal $ Literal.Uint64 1) (Core.Literal $ Literal.Uint64 2)
         let outPath = tempDir </> "program"
 
-        compile tempDir expr outPath
+        let nameTys = const undefined
+        compile tempDir nameTys expr outPath
 
         outPathExists <- Directory.doesFileExist outPath
         outPathExists `shouldBe` True
@@ -89,7 +90,8 @@ spec =
         let expr = Core.Subtract Type.Uint64 (Core.Literal $ Literal.Uint64 22) (Core.Literal $ Literal.Uint64 4)
         let outPath = tempDir </> "program"
 
-        compile tempDir expr outPath
+        let nameTys = const undefined
+        compile tempDir nameTys expr outPath
 
         outPathExists <- Directory.doesFileExist outPath
         outPathExists `shouldBe` True

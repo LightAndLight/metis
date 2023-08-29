@@ -1,5 +1,6 @@
 module Main (main) where
 
+import qualified Test.AllocateRegisters
 import qualified Test.Anf
 import qualified Test.Compile
 import qualified Test.CoreToAsm
@@ -9,6 +10,7 @@ import qualified Test.Liveness
 main :: IO ()
 main =
   hspec $ do
+    Test.AllocateRegisters.spec
     Test.Anf.spec
     Test.Compile.spec
     Test.CoreToAsm.spec

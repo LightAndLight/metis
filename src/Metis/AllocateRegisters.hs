@@ -16,7 +16,8 @@ module Metis.AllocateRegisters (
   AllocateRegistersState (..),
   initialAllocateRegistersState,
   allocateRegistersExpr_X86_64,
-  -- allocateRegistersCompound_X86_64,
+  RegisterFunctionArgument (..),
+  moveRegisterFunctionArguments,
 ) where
 
 import Control.Monad (when)
@@ -39,7 +40,6 @@ import qualified Data.Sequence as Seq
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
-import Foreign (moveArray)
 import GHC.Stack (HasCallStack)
 import qualified Metis.Anf as Anf
 import Metis.Asm (Block (..), BlockAttribute)
@@ -50,9 +50,7 @@ import Metis.Isa (
   Instruction,
   Isa (generalPurposeRegisters),
   Memory (..),
-  Mov,
   Op2 (..),
-  Push,
   Register,
   Sub,
   Symbol (..),
@@ -219,6 +217,7 @@ freeLocation location =
 
 allocateRegisters_X86_64 ::
   (MonadAsm X86_64 m, MonadLog m, MonadFix m) =>
+  (Text -> Type) ->
   Seq (Register X86_64) ->
   Anf.ExprInfo ->
   Anf.Expr ->
@@ -226,7 +225,7 @@ allocateRegisters_X86_64 ::
   Text ->
   [BlockAttribute] ->
   m (Location X86_64)
-allocateRegisters_X86_64 available exprInfo expr liveness blockName blockAttributes = do
+allocateRegisters_X86_64 nameTys available exprInfo expr liveness blockName blockAttributes = do
   rec (a, s) <-
         runStateT
           ( runReaderT
@@ -234,6 +233,8 @@ allocateRegisters_X86_64 available exprInfo expr liveness blockName blockAttribu
               AllocateRegistersEnv
                 { labelArgs = exprInfo.labelArgs
                 , labelArgLocations = s.labelArgLocations
+                , nameTys
+                , varTys = exprInfo.varTys
                 }
           )
           (initialAllocateRegistersState available liveness blockName blockAttributes)
@@ -265,6 +266,8 @@ allocateRegistersSimple_X86_64 simple =
       lookupLocation var
     Anf.Literal lit ->
       allocateRegistersLiteral_X86_64 lit
+    Anf.Name name ->
+      error "TODO: allocateRegistersSimple_X86_64/Name" name
 
 freeKills :: (MonadState (AllocateRegistersState isa) m, MonadLog m) => Anf.Var -> m ()
 freeKills var = do
@@ -315,6 +318,7 @@ data RegisterFunctionArgument isa = RegisterFunctionArgument
   { callerSave :: Bool
   -- ^ The caller needs to save the register when the register's current contents are used after the
   -- call returns.
+  , size :: Word64
   , src :: Location isa
   , dest :: Register isa
   }
@@ -356,6 +360,7 @@ setupFunctionArguments registersAvailableAtCall registersKilledByCall availableA
                               argLocation /= Register register
                                 && register `notElem` registersAvailableAtCall
                                 && not (register `HashSet.member` registersKilledByCall)
+                          , size = Type.sizeOf argTy
                           , src = argLocation
                           , dest = register
                           }
@@ -417,6 +422,147 @@ setupStackFunctionArguments offset argTys argLocations =
           <> ", "
           <> show argLocations
 
+{-
+Problem:
+
+What if there's a caller-saved register argument that also needs to go into a stack
+argument?
+
+```
+%c = f(%a, %b, %a)
+```
+
+Assuming we start with `%a -> %rbx` and `%b -> %rcx`, and only have `{%rax, %rbx}` as
+argument-passing registers, we get:
+
+```
+mov %rbx, %rax
+mov %rcx, %rbx // wrong! %rbx is overwritten too early.
+push %rbx
+push $after
+push %rbp
+mov %rsp, %rbp
+jump $f
+after:
+...
+```
+
+Perhaps the problem is in using `%a` twice. What about:
+
+```
+%a_1, %a_2 = dup(%a)
+%c = f(%a_1, %b, %a_2)
+```
+
+We can still start with `%a -> %rbx` and `%b -> %rcx`, then `%a_1, a_2 = clone(%a)` gives
+`%a_1 -> %rbx` and `%a_2 -> dest` where `dest \notin {%rbx, %rcx}`.
+
+```
+mov %rbx, %rax
+mov %rcx, %rbx
+push dest
+push $after
+push %rbp
+mov %rsp, %rbp
+jump $f
+after:
+...
+```
+
+Another situation: `f(%b, %a)`. Assume `%a -> %rax` and `%b -> %rbx`, with no
+stack-passed arguments.
+
+```
+mov %rbx, %rax
+mov %rax, %rbx // wrong!
+push $after
+push %rbp
+mov %rsp, %rbp
+jump $f
+after:
+...
+```
+
+The general issue is "simultaneous reassignment of registers": how to tomically permute the values
+in a particular set of registers.
+-}
+moveRegisterFunctionArguments ::
+  (MonadState (AllocateRegistersState X86_64) m) =>
+  HashMap (Register X86_64) (Location X86_64) ->
+  [RegisterFunctionArgument X86_64] ->
+  m [Instruction X86_64]
+moveRegisterFunctionArguments registerRemapping arguments =
+  case arguments of
+    [] ->
+      pure []
+    [RegisterFunctionArgument{callerSave, size = _, src, dest}] -> do
+      let pushDest = [push dest | callerSave]
+
+      b <-
+        case src of
+          Register srcRegister ->
+            case HashMap.lookup srcRegister registerRemapping of
+              Nothing ->
+                pure [mov Op2{src = srcRegister, dest} | srcRegister /= dest]
+              Just srcRegisterRemapped -> do
+                let a =
+                      [ case srcRegisterRemapped of
+                        Register srcRegisterRemappedRegister ->
+                          mov Op2{src = srcRegisterRemappedRegister, dest}
+                        Stack srcRegisterRemappedOffset ->
+                          mov Op2{src = Mem{base = Rbp, offset = srcRegisterRemappedOffset}, dest}
+                      | srcRegisterRemapped /= Register dest
+                      ]
+                freeLocation srcRegisterRemapped
+                pure a
+          Stack srcOffset ->
+            pure [mov Op2{src = Mem{base = Rbp, offset = srcOffset}, dest}]
+
+      pure $ pushDest <> b
+    RegisterFunctionArgument{callerSave, size, src, dest} : arguments' -> do
+      let pushDest = [push dest | callerSave]
+
+      temp <- allocLocation size
+      a <-
+        case src of
+          Register srcRegister ->
+            case HashMap.lookup srcRegister registerRemapping of
+              Nothing ->
+                pure $
+                  if srcRegister == dest
+                    then []
+                    else
+                      saveDestination temp dest
+                        <> [mov Op2{src = srcRegister, dest}]
+              Just srcRegisterRemapped -> do
+                let a =
+                      if srcRegisterRemapped == Register dest
+                        then []
+                        else
+                          saveDestination temp dest
+                            <> [ case srcRegisterRemapped of
+                                  Register srcRegisterRemappedRegister ->
+                                    mov Op2{src = srcRegisterRemappedRegister, dest}
+                                  Stack srcRegisterRemappedOffset ->
+                                    mov Op2{src = Mem{base = Rbp, offset = srcRegisterRemappedOffset}, dest}
+                               ]
+                freeLocation srcRegisterRemapped
+                pure a
+          Stack srcOffset ->
+            pure $ saveDestination temp dest <> [mov Op2{src = Mem{base = Rbp, offset = srcOffset}, dest}]
+
+      b <- moveRegisterFunctionArguments (HashMap.insert dest temp registerRemapping) arguments'
+
+      pure $ pushDest <> a <> b
+  where
+    saveDestination temp dest =
+      [ case temp of
+          Register tempRegister ->
+            mov Op2{src = dest, dest = tempRegister}
+          Stack tempOffset ->
+            mov Op2{src = dest, dest = Mem{base = Rbp, offset = tempOffset}}
+      ]
+
 allocateRegistersExpr_X86_64 ::
   (MonadState (AllocateRegistersState X86_64) m, MonadReader (AllocateRegistersEnv X86_64) m, MonadLog m) =>
   HashMap Anf.Var Word64 ->
@@ -442,6 +588,8 @@ allocateRegistersExpr_X86_64 varSizes expr =
               Register register -> do
                 emit [mov Op2{src = imm lit, dest = register}]
                 pure location
+          Anf.Name name ->
+            error "TODO: allocateRegistersExpr_X86_64/Name" name
       modify (\s -> s{locations = HashMap.Lazy.insert var valueLocation s.locations})
 
       allocateRegistersExpr_X86_64 varSizes rest
@@ -480,75 +628,9 @@ allocateRegistersExpr_X86_64 varSizes expr =
                       argTys
                       argLocations
 
-              {- problem:
+              emit =<< moveRegisterFunctionArguments mempty functionArguments.registerFunctionArguments
 
-              What if there's a caller-saved register argument that also needs to go into a stack
-              argument?
-
-              ```
-              %c = f(%a, %b, %a)
-              ```
-
-              Assuming we start with `%a -> %rbx` and `%b -> %rcx`, and only have `{%rax, %rbx}` as
-              argument-passing registers, we get:
-
-              ```
-              mov %rbx, %rax
-              mov %rcx, %rbx // wrong! %rbx is overwritten too early.
-              push %rbx
-              push $after
-              push %rbp
-              mov %rsp, %rbp
-              jump $f
-              after:
-              ...
-              ```
-
-              Perhaps the problem is in using `%a` twice. What about:
-
-              ```
-              %a_1, %a_2 = dup(%a)
-              %c = f(%a_1, %b, %a_2)
-              ```
-
-              We can still start with `%a -> %rbx` and `%b -> %rcx`, then `%a_1, a_2 = clone(%a)` gives
-              `%a_1 -> %rbx` and `%a_2 -> dest` where `dest \notin {%rbx, %rcx}`.
-
-              ```
-              mov %rbx, %rax
-              mov %rcx, %rbx
-              push dest
-              push $after
-              push %rbp
-              mov %rsp, %rbp
-              jump $f
-              after:
-              ...
-              ```
-
-              Another situation: `f(%b, %a)`. Assume `%a -> %rax` and `%b -> %rbx`, with no
-              stack-passed arguments.
-
-              ```
-              mov %rbx, %rax
-              mov %rax, %rbx // wrong!
-              push $after
-              push %rbp
-              mov %rsp, %rbp
-              jump $f
-              after:
-              ...
-              ```
-              -}
-              for_ functionArguments.registerFunctionArguments $ \RegisterFunctionArgument{callerSave, src, dest} -> do
-                when callerSave $ emit [push dest]
-                emit
-                  [ case src of
-                      Register register -> mov Op2{src = register, dest}
-                      Stack offset -> mov Op2{src = Mem{base = Rbp, offset}, dest}
-                  ]
-
-              for_ (reverse functionArguments.stackFunctionArguments) $ \StackFunctionArgument{src, dest} -> do
+              for_ (reverse functionArguments.stackFunctionArguments) $ \StackFunctionArgument{src, dest = _} -> do
                 emit
                   [ case src of
                       Register register -> push register
@@ -574,10 +656,10 @@ allocateRegistersExpr_X86_64 varSizes expr =
               return address popeed by callee
               stack function arguments popped by callee
               -}
-              for_ (reverse functionArguments.registerFunctionArguments) $ \RegisterFunctionArgument{callerSave, src, dest} -> do
+              for_ (reverse functionArguments.registerFunctionArguments) $ \RegisterFunctionArgument{callerSave, src = _, dest} -> do
                 when callerSave $ emit [pop dest]
 
-              pure _
+              pure (error "TODO: call instruction")
             ty -> error $ "trying to call a non-function type: " <> show ty
         Anf.Binop op a b -> do
           let op' :: (Add X86_64 a b, Sub X86_64 a b) => Op2 a b -> Instruction X86_64
@@ -590,6 +672,8 @@ allocateRegistersExpr_X86_64 varSizes expr =
           -- in assembly, which is `dest := dest - src`.
           aLocation <-
             case a of
+              Anf.Name name ->
+                error "TODO: allocateRegistersExpr_X86_64/Binop/a/Name" name
               Anf.Literal lit ->
                 allocateRegistersLiteral_X86_64 lit
               Anf.Var aVar -> do
@@ -678,6 +762,8 @@ allocateRegistersExpr_X86_64 varSizes expr =
                 pure aLocation
 
           case b of
+            Anf.Name name ->
+              error "TODO: allocateRegistersExpr_X86_64/Binop/b/Name" name
             Anf.Literal lit -> do
               case aLocation of
                 Stack aOffset ->
@@ -706,6 +792,8 @@ allocateRegistersExpr_X86_64 varSizes expr =
     Anf.IfThenElse cond then_ else_ rest -> do
       (condLocation, freeCondLocation) <-
         case cond of
+          Anf.Name name ->
+            error "TODO: allocateRegistersExpr_X86_64/IfThenElse/cond/Name" name
           Anf.Var var ->
             (,pure ()) <$> lookupLocation var
           Anf.Literal lit -> do

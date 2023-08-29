@@ -47,7 +47,8 @@ testCase TestCase{title, expr, availableRegisters, expectedOutput} =
     let (anfInfo, anf) = Anf.fromCore absurd expr
     let liveness = Liveness.liveness anf
     asm <- fmap (Text.Lazy.Builder.toLazyText . printAsm printInstruction_X86_64) . runAsmBuilderT . noLogging $ do
-      _ <- allocateRegisters_X86_64 availableRegisters anfInfo anf liveness "main" []
+      let nameTys = const undefined
+      _ <- allocateRegisters_X86_64 nameTys availableRegisters anfInfo anf liveness "main" []
       pure ()
     asm `shouldBe` Text.Lazy.Builder.toLazyText (foldMap @[] (<> "\n") expectedOutput)
 

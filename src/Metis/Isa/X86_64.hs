@@ -68,6 +68,7 @@ instance Isa X86_64 where
     | Lea_sr (Op2 Symbol (Register X86_64))
     | Cmp_ri (Register X86_64) Immediate
     | Cmp_mi (Memory X86_64) Immediate
+    deriving (Eq, Show)
 
   registerName reg =
     case reg of
@@ -112,6 +113,7 @@ data Inst2
   | Add
   | Sub
   | Xor
+  deriving (Eq, Show)
 
 instance Mov X86_64 Immediate (Register X86_64) where mov = Inst2_ir Mov
 instance Mov X86_64 Immediate (Memory X86_64) where mov = Inst2_im Mov

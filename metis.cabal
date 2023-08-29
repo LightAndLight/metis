@@ -75,6 +75,7 @@ test-suite metis-test
     import:           warnings
     default-language: Haskell2010
     other-modules:
+        Test.AllocateRegisters
         Test.Anf
         Test.Compile
         Test.CoreToAsm
@@ -91,6 +92,7 @@ test-suite metis-test
         filepath,
         hspec,
         metis,
+        mtl,
         process,
         temporary,
         text,

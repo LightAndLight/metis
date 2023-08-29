@@ -73,12 +73,16 @@ data Compound
 data Binop = Add | Subtract
   deriving (Show, Eq)
 
-newtype ExprInfo = ExprInfo {labelArgs :: Var -> Var}
+data ExprInfo = ExprInfo
+  { labelArgs :: Var -> Var
+  , varTys :: Var -> Type
+  }
 
 data AnfBuilderState = AnfBuilderState
   { nextVar :: Word64
   , program :: Expr -> Expr
   , labelArgs :: HashMap Var Var
+  , varTys :: HashMap Var Type
   }
 
 newtype AnfBuilderT m a = AnfBuilderT {value :: StateT AnfBuilderState m a}
@@ -92,8 +96,8 @@ runAnfBuilderT ma = do
       AnfBuilderState
         { nextVar = 0
         , program = id
-        , labelArgs =
-            mempty
+        , labelArgs = mempty
+        , varTys = mempty
         }
   pure (s, a)
 
@@ -120,12 +124,14 @@ letS :: (Monad m) => Type -> Simple -> AnfBuilderT m Var
 letS ty value = do
   var <- freshVar
   emit $ LetS var (typeVarInfo ty) value
+  AnfBuilderT $ modify (\s -> (s :: AnfBuilderState){varTys = HashMap.insert var ty s.varTys})
   pure var
 
 letC :: (Monad m) => Type -> Compound -> AnfBuilderT m Var
 letC ty value = do
   var <- freshVar
   emit $ LetC var (typeVarInfo ty) value
+  AnfBuilderT $ modify (\s -> (s :: AnfBuilderState){varTys = HashMap.insert var ty s.varTys})
   pure var
 
 block :: (Monad m) => Var -> Var -> AnfBuilderT m ()
@@ -145,6 +151,7 @@ fromCore :: (a -> Var) -> Core.Expr a -> (ExprInfo, Expr)
 fromCore toVar expr =
   ( ExprInfo
       { labelArgs = \label -> Maybe.fromMaybe (error $ show label <> " missing from label args map") $ HashMap.lookup label s.labelArgs
+      , varTys = \var -> Maybe.fromMaybe (error $ show var <> " missing from variable types map") $ HashMap.lookup var s.varTys
       }
   , s.program (Return simple)
   )

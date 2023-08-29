@@ -35,6 +35,7 @@ import Metis.Isa (Memory (..), Op2 (..), Symbol (..), call, generalPurposeRegist
 import Metis.Isa.X86_64 (Register (..), X86_64)
 import qualified Metis.Liveness as Liveness
 import Metis.Log (noLogging)
+import Metis.Type (Type)
 import qualified System.Directory as Directory
 import qualified System.Environment
 import System.Exit (ExitCode (..))
@@ -136,8 +137,8 @@ link inFile outFile = do
     NoStdin
     IgnoreStdout
 
-compile :: (MonadFix m, MonadIO m) => FilePath -> Core.Expr Void -> FilePath -> m ()
-compile buildDir expr outPath = do
+compile :: (MonadFix m, MonadIO m) => FilePath -> (Text -> Type) -> Core.Expr Void -> FilePath -> m ()
+compile buildDir nameTys expr outPath = do
   liftIO $ Directory.createDirectoryIfMissing True buildDir
 
   let programName = FilePath.takeBaseName outPath
@@ -148,6 +149,7 @@ compile buildDir expr outPath = do
     resultLocation <-
       noLogging $
         allocateRegisters_X86_64
+          nameTys
           (generalPurposeRegisters @X86_64)
           anfInfo
           anf

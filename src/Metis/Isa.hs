@@ -1,7 +1,9 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Metis.Isa (
   Isa (..),
@@ -44,6 +46,7 @@ class (Eq (Register isa), Show (Register isa), Hashable (Register isa)) => Isa i
 data Immediate
   = Number Word64
   | Label Symbol
+  deriving (Eq, Show)
 
 class ToImmediate a where
   imm :: a -> Immediate
@@ -62,7 +65,11 @@ instance ToImmediate Symbol where
 
 data Memory isa = Mem {base :: Register isa, offset :: Int64}
 
+deriving instance (Eq (Register isa)) => Eq (Memory isa)
+deriving instance (Show (Register isa)) => Show (Memory isa)
+
 newtype Symbol = Symbol {value :: Text}
+  deriving (Eq, Show)
 
 class Call isa a where call :: a -> Instruction isa
 class Pop isa a where pop :: a -> Instruction isa
@@ -71,6 +78,7 @@ class Jmp isa a where jmp :: a -> Instruction isa
 class Je isa a where je :: a -> Instruction isa
 
 data Op2 src dest = Op2 {src :: src, dest :: dest}
+  deriving (Eq, Show)
 
 class Add isa src dest where add :: Op2 src dest -> Instruction isa
 class Lea isa src dest where lea :: Op2 src dest -> Instruction isa
