@@ -112,13 +112,13 @@ initialInstSelectionState available liveness blockName blockAttributes =
     }
 
 lookupLocation :: (HasCallStack) => (MonadState (InstSelectionState isa) m) => Anf.Var -> m (Location isa)
-lookupLocation var = gets (Maybe.fromMaybe (error $ show var <> "missing from location map") . HashMap.Lazy.lookup var . (.locations))
+lookupLocation var = gets (Maybe.fromMaybe (error $ show var <> " missing from location map") . HashMap.Lazy.lookup var . (.locations))
 
 lookupLiveness :: (HasCallStack) => (MonadState (InstSelectionState isa) m) => Anf.Var -> m Liveness
-lookupLiveness var = gets (Maybe.fromMaybe (error $ show var <> "missing from liveness map") . HashMap.lookup var . (.liveness))
+lookupLiveness var = gets (Maybe.fromMaybe (error $ show var <> " missing from liveness map") . HashMap.lookup var . (.liveness))
 
 lookupSize :: (HasCallStack) => Anf.Var -> HashMap Anf.Var Word64 -> Word64
-lookupSize var varSizes = Maybe.fromMaybe (error $ show var <> " missing from sizes map") $ HashMap.lookup var varSizes
+lookupSize var varSizes = Maybe.fromMaybe (error $ show var <> "  missing from sizes map") $ HashMap.lookup var varSizes
 
 data InstSelectionEnv isa = InstSelectionEnv
   { labelArgs :: Anf.Var -> Anf.Var

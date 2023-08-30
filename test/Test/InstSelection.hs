@@ -141,8 +141,8 @@ spec =
                             , "main:"
                             , "mov $1, %rax"
                             , "mov $2, %rbx"
-                            , "push %rbp"
                             , "push $after"
+                            , "push %rbp"
                             , "mov %rsp, %rbp"
                             , "jmp f"
                             , "after:"
@@ -160,8 +160,8 @@ spec =
                             , "mov $1, %rax"
                             , "mov $2, %rbx"
                             , "push %rax"
-                            , "push %rbp"
                             , "push $after"
+                            , "push %rbp"
                             , "mov %rsp, %rbp"
                             , "jmp f"
                             , "after:"
@@ -184,13 +184,13 @@ spec =
                             , "mov $1, %rax"
                             , "mov $2, %rbx"
                             , "push %rax"
+                            , "push $after"
                             , -- begin argument setup
                               "mov %rax, %rcx"
                             , "mov %rbx, %rax"
                             , "mov %rcx, %rbx"
                             , -- end argument setup
                               "push %rbp"
-                            , "push $after"
                             , "mov %rsp, %rbp"
                             , "jmp f"
                             , "after:"
@@ -202,8 +202,8 @@ spec =
                             ]
     describe "instSelectionFunction_X86_64" $ do
       let
-        shouldCompileTo :: (HasCallStack) => Core.Function -> [Lazy.Text] -> IO ()
-        shouldCompileTo function expectedOutput =
+        shouldCompileTo' :: (HasCallStack) => Seq (Register X86_64) -> Core.Function -> [Lazy.Text] -> IO ()
+        shouldCompileTo' available function expectedOutput =
           withSystemTempFile "metis-instruction-selection-logs.txt" $ \tempFilePath tempFileHandle ->
             ( do
                 let function' = Anf.fromFunction function
@@ -214,7 +214,7 @@ spec =
 
                 asm <-
                   fmap (printAsm printInstruction_X86_64) . runAsmBuilderT . handleLogging tempFileHandle . void $
-                    instSelectionFunction_X86_64 nameTys (generalPurposeRegisters @X86_64) liveness function'
+                    instSelectionFunction_X86_64 nameTys available liveness function'
 
                 hClose tempFileHandle
 
@@ -233,6 +233,9 @@ spec =
                           throwIO output
                       )
 
+        shouldCompileTo :: (HasCallStack) => Core.Function -> [Lazy.Text] -> IO ()
+        shouldCompileTo = shouldCompileTo' (generalPurposeRegisters @X86_64)
+
       it "f(x : Uint64, y : Uint64) : Uint64 = x + y" $
         Core.Function
           { name = "f"
@@ -246,3 +249,42 @@ spec =
                             , "pop %rbp"
                             , "ret"
                             ]
+
+      it "f(x : Uint64, y : Uint64) : Uint64 = x + y (only %rax available)" $
+        shouldCompileTo'
+          (fromList [Rax])
+          Core.Function
+            { name = "f"
+            , args = [("x", Type.Uint64), ("y", Type.Uint64)]
+            , retTy = Type.Uint64
+            , body = Core.Add Type.Uint64 (Core.Var 0) (Core.Var 1)
+            }
+          [ ".text"
+          , "f:"
+          , -- `y` is passed via stack
+            "add 8(%rbp), %rax"
+          , "pop %rbp"
+          , "add $8, %rsp" -- deallocate `y`
+          , "ret"
+          ]
+
+      it "f(x : Uint64, y : Uint64, z : Uint64) : Uint64 = x + y + z (only %rax available)" $
+        shouldCompileTo'
+          (fromList [Rax])
+          Core.Function
+            { name = "f"
+            , args = [("x", Type.Uint64), ("y", Type.Uint64), ("z", Type.Uint64)]
+            , retTy = Type.Uint64
+            , body = Core.Add Type.Uint64 (Core.Add Type.Uint64 (Core.Var 0) (Core.Var 1)) (Core.Var 2)
+            }
+          [ ".text"
+          , "f:"
+          , -- `x` is passed in register at %rax
+            -- `y` is passed via stack at 8(%rbp)
+            -- `z` is passed via stack at 16(%rbp)
+            "add 8(%rbp), %rax"
+          , "add 16(%rbp), %rax"
+          , "pop %rbp"
+          , "add $16, %rsp" -- deallocate `y` and `z`
+          , "ret"
+          ]

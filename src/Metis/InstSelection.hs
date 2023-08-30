@@ -358,15 +358,6 @@ data StackFunctionArgument isa = StackFunctionArgument
   , dest :: Memory isa
   }
 
-{-
-stack argument 3         (16 + size_of(stack argument 1) + size_of(stack argument 2))(%rbp)
-stack argument 2         (16 + size_of(stack argument 1))(%rbp)
-stack argument 1         16(%rbp)
-caller's base pointer    8(%rbp)
-return address           0(%rbp)
-local 1                  (-size_of(local 1))(%rbp)
-local 2                  (-size_of(local 1) - size_of(local 2))(%rbp)
--}
 setupFunctionArguments ::
   Seq (Register X86_64) ->
   [Type] ->
@@ -405,9 +396,9 @@ setupFunctionArguments availableArgumentRegisters argTys argLocations =
               <> show argLocations
     Seq.EmptyL ->
       setupStackFunctionArguments
-        -- Assumes that 0(%rbp) in the callee's stack frame contains the return address, and 8(%rbp)
-        -- contains the caller's frame pointer.
-        (2 * fromIntegral @Word64 @Int64 Type.pointerSize)
+        -- Assumes that 0(%rbp) in the callee's stack frame contains the return address, after which
+        -- comes the stack arguments.
+        (fromIntegral @Word64 @Int64 Type.pointerSize)
         argTys
         argLocations
 
@@ -614,15 +605,6 @@ getRegistersUsedByFunction registerPool argTys retTy =
         Type.Composite ccs ->
           traverse_ goCallingConvention ccs
 
-{-
-stack argument 3         (16 + size_of(stack argument 1) + size_of(stack argument 2))(%rbp)
-stack argument 2         (16 + size_of(stack argument 1))(%rbp)
-stack argument 1         16(%rbp)
-caller's base pointer    8(%rbp)
-return address           0(%rbp)
-local 1                  (-size_of(local 1))(%rbp)
-local 2                  (-size_of(local 1) - size_of(local 2))(%rbp)
--}
 instSelectionFunction_X86_64 ::
   (MonadAsm X86_64 m, MonadLog m, MonadFix m) =>
   (Text -> Type) ->
@@ -652,6 +634,9 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
         emit $
           [add Op2{dest = Rsp, src = imm localsSize} | localsSize > 0]
             <> [pop Rbp]
+            -- TODO: have caller put return address *after* the stack arguments, then use `ret
+            -- stackArgumentsSize`, which pops the return address into `rip` then releases
+            -- `stackArgumentsSize` bytes from the stack.
             <> [add Op2{dest = Rsp, src = imm stackArgumentsSize} | stackArgumentsSize > 0]
             <> [ret ()]
 
@@ -673,8 +658,8 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
     setupArguments args =
       case args of
         [] -> pure 0
-        (argVar, argTy) : args' -> do
-          case Type.callingConventionOf argTy of
+        arg : args' -> do
+          case Type.callingConventionOf $ snd arg of
             Type.Register -> do
               available <- gets (.available)
               case Seq.viewl available of
@@ -683,12 +668,15 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
                     ( \s ->
                         s
                           { available = available'
-                          , locations = HashMap.insert argVar (Register register) s.locations
+                          , locations = HashMap.insert (fst arg) (Register register) s.locations
                           }
                     )
                   setupArguments args'
                 Seq.EmptyL ->
-                  setupStackArguments (fromIntegral @Word64 @Int64 Type.pointerSize) 0 args'
+                  setupStackArguments
+                    (fromIntegral @Word64 @Int64 Type.pointerSize)
+                    0
+                    args -- we couldn't allocate register for `arg`, so try again with the stack
             Type.Composite{} ->
               error "TODO: composite function arguments"
 
@@ -773,6 +761,11 @@ instSelectionExpr_X86_64 varSizes expr =
                     then Just register <$ emit [push register]
                     else pure Nothing
 
+              (label, emitLabel) <- declareLabel "after"
+              emit [push (imm label)]
+
+              -- TODO: allocate space for outputs that are passed via stack
+
               let functionArguments =
                     setupFunctionArguments
                       (generalPurposeRegisters @X86_64)
@@ -789,11 +782,7 @@ instSelectionExpr_X86_64 varSizes expr =
                       Address symbol -> push (imm symbol)
                   ]
 
-              -- TODO: allocate space for outputs that are passed via stack
-
-              (label, emitLabel) <- declareLabel "after"
               emit [push Rbp]
-              emit [push (imm label)]
               emit [mov Op2{src = Rsp, dest = Rbp}]
               emit
                 [ case functionLocation of
