@@ -3,7 +3,7 @@
 module Metis.Core (
   Expr (..),
   typeOf,
-  Definition (..),
+  Function (..),
 ) where
 
 import Bound.Scope.Simple (Scope)
@@ -36,9 +36,9 @@ typeOf nameTy varTy expr =
     IfThenElse ty _ _ _ -> ty
     Call ty _ _ -> ty
 
-data Definition = Function
+data Function = Function
   { name :: Text
   , args :: [(Text, Type)]
-  , return :: Type
+  , retTy :: Type
   , body :: Expr Word64
   }

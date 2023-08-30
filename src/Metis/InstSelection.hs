@@ -16,16 +16,18 @@ module Metis.InstSelection (
   Value (..),
   InstSelectionState (..),
   initialInstSelectionState,
+  instSelectionFunction_X86_64,
   instSelectionExpr_X86_64,
   RegisterFunctionArgument (..),
   moveRegisterFunctionArguments,
 ) where
 
+import Control.Lens (Field1 (_1))
 import Control.Monad.Fix (MonadFix)
-import Control.Monad.Reader (runReaderT)
+import Control.Monad.Reader (ReaderT, runReaderT)
 import Control.Monad.Reader.Class (MonadReader, asks)
 import Control.Monad.State.Class (MonadState, gets, modify)
-import Control.Monad.State.Strict (State, runState, runStateT)
+import Control.Monad.State.Strict (State, StateT, runState, runStateT)
 import Data.Foldable (foldl', for_, traverse_)
 import qualified Data.HashMap.Lazy as HashMap.Lazy
 import qualified Data.HashMap.Lazy as Lazy (HashMap)
@@ -225,6 +227,28 @@ freeLocation location =
     Stack{} ->
       pure ()
 
+runInstSelectionT ::
+  (MonadFix m) =>
+  (Text -> Type) ->
+  Anf.ExprInfo ->
+  InstSelectionState isa ->
+  ReaderT (InstSelectionEnv isa) (StateT (InstSelectionState isa) m) a ->
+  m (a, InstSelectionState isa)
+runInstSelectionT nameTys exprInfo s ma = do
+  rec (a, s') <-
+        runStateT
+          ( runReaderT
+              ma
+              InstSelectionEnv
+                { labelArgs = exprInfo.labelArgs
+                , labelArgLocations = s'.labelArgLocations
+                , nameTys
+                , varTys = exprInfo.varTys
+                }
+          )
+          s
+  pure (a, s')
+
 instSelection_X86_64 ::
   (MonadAsm X86_64 m, MonadLog m, MonadFix m) =>
   (Text -> Type) ->
@@ -236,18 +260,12 @@ instSelection_X86_64 ::
   [BlockAttribute] ->
   m (Value X86_64)
 instSelection_X86_64 nameTys available exprInfo expr liveness blockName blockAttributes = do
-  rec (a, s) <-
-        runStateT
-          ( runReaderT
-              (instSelectionExpr_X86_64 mempty expr)
-              InstSelectionEnv
-                { labelArgs = exprInfo.labelArgs
-                , labelArgLocations = s.labelArgLocations
-                , nameTys
-                , varTys = exprInfo.varTys
-                }
-          )
-          (initialInstSelectionState available liveness blockName blockAttributes)
+  (a, s) <-
+    runInstSelectionT
+      nameTys
+      exprInfo
+      (initialInstSelectionState available liveness blockName blockAttributes)
+      (instSelectionExpr_X86_64 mempty expr)
   traverse_ (\Block{label, attributes, instructions} -> Asm.block label attributes instructions) s.previousBlocks
   _ <- Asm.block s.currentBlockName s.currentBlockAttributes s.currentBlockInstructions
   pure a
@@ -594,6 +612,79 @@ getRegistersUsedByFunction registerPool argTys retTy =
               modify $ \(_, toSave) -> (availableRegisters', HashSet.insert register toSave)
         Type.Composite ccs ->
           traverse_ goCallingConvention ccs
+
+{-
+stack argument 3         (16 + size_of(stack argument 1) + size_of(stack argument 2))(%rbp)
+stack argument 2         (16 + size_of(stack argument 1))(%rbp)
+stack argument 1         16(%rbp)
+caller's base pointer    8(%rbp)
+return address           0(%rbp)
+local 1                  (-size_of(local 1))(%rbp)
+local 2                  (-size_of(local 1) - size_of(local 2))(%rbp)
+-}
+instSelectionFunction_X86_64 ::
+  (MonadAsm X86_64 m, MonadLog m, MonadFix m) =>
+  (Text -> Type) ->
+  Seq (Register X86_64) ->
+  HashMap Anf.Var Liveness ->
+  Anf.Function ->
+  m ()
+instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
+  let initial = initialInstSelectionState initialAvailable liveness function.name []
+  ((), s') <- runInstSelectionT nameTys function.bodyInfo initial $ do
+    setupArguments function.args
+    -- TODO: something for values that are returned via stack
+    value <- instSelectionExpr_X86_64 mempty function.body
+    _ value
+    pure ()
+
+  traverse_
+    (\Block{label, attributes, instructions} -> Asm.block label attributes instructions)
+    s'.previousBlocks
+
+  _ <-
+    Asm.block
+      s'.currentBlockName
+      s'.currentBlockAttributes
+      s'.currentBlockInstructions
+
+  pure ()
+  where
+    {- TODO: this code is basically the same as `setupFunctionArguments`. Make it the same code?
+    -}
+    setupArguments :: (MonadState (InstSelectionState isa) m) => [(Anf.Var, Type)] -> m ()
+    setupArguments args =
+      case args of
+        [] -> pure ()
+        (argVar, argTy) : args' -> do
+          case Type.callingConventionOf argTy of
+            Type.Register -> do
+              available <- gets (.available)
+              case Seq.viewl available of
+                register Seq.:< available' -> do
+                  modify
+                    ( \s ->
+                        s
+                          { available = available'
+                          , locations = HashMap.insert argVar (Register register) s.locations
+                          }
+                    )
+                  setupArguments args'
+                Seq.EmptyL ->
+                  setupStackArguments (2 * fromIntegral @Word64 @Int64 Type.pointerSize) args'
+            Type.Composite{} ->
+              error "TODO: composite function arguments"
+
+    setupStackArguments :: (MonadState (InstSelectionState isa) m) => Int64 -> [(Anf.Var, Type)] -> m ()
+    setupStackArguments offset args =
+      case args of
+        [] -> pure ()
+        (argVar, argTy) : args' ->
+          case Type.callingConventionOf argTy of
+            Type.Register -> do
+              modify (\s -> s{locations = HashMap.insert argVar (Stack offset) s.locations})
+              setupStackArguments (offset + fromIntegral @Word64 @Int64 (Type.sizeOf argTy)) args'
+            Type.Composite{} -> error "TODO: composite stack function arguments"
 
 instSelectionExpr_X86_64 ::
   (MonadState (InstSelectionState X86_64) m, MonadReader (InstSelectionEnv X86_64) m, MonadLog m) =>

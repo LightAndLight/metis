@@ -1,6 +1,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-ambiguous-fields #-}
 
 module Metis.Anf (
@@ -12,8 +13,10 @@ module Metis.Anf (
   Compound (..),
   Binop (..),
   ExprInfo (..),
+  Function (..),
 
   -- * Core translation
+  fromFunction,
   fromCore,
   fromCoreExpr,
 
@@ -76,6 +79,14 @@ data Binop = Add | Subtract
 data ExprInfo = ExprInfo
   { labelArgs :: Var -> Var
   , varTys :: Var -> Type
+  }
+
+data Function = Function
+  { name :: Text
+  , args :: [(Var, Type)]
+  , retTy :: Type
+  , bodyInfo :: ExprInfo
+  , body :: Expr
   }
 
 data AnfBuilderState = AnfBuilderState
@@ -150,13 +161,45 @@ programOf ma =
 fromCore :: (a -> Var) -> Core.Expr a -> (ExprInfo, Expr)
 fromCore toVar expr =
   ( ExprInfo
-      { labelArgs = \label -> Maybe.fromMaybe (error $ show label <> " missing from label args map") $ HashMap.lookup label s.labelArgs
-      , varTys = \var -> Maybe.fromMaybe (error $ show var <> " missing from variable types map") $ HashMap.lookup var s.varTys
+      { labelArgs = \label ->
+          Maybe.fromMaybe
+            (error $ show label <> " missing from label args map")
+            (HashMap.lookup label s.labelArgs)
+      , varTys = \var ->
+          Maybe.fromMaybe
+            (error $ show var <> " missing from variable types map")
+            (HashMap.lookup var s.varTys)
       }
   , s.program (Return simple)
   )
   where
     (s, simple) = runIdentity . runAnfBuilderT $ fromCoreExpr toVar expr
+
+fromFunction :: Core.Function -> Function
+fromFunction Core.Function{name, args, retTy, body} =
+  Function
+    { name
+    , args = args'
+    , retTy
+    , bodyInfo =
+        ExprInfo
+          { labelArgs = \label ->
+              Maybe.fromMaybe
+                (error $ show label <> " missing from label args map")
+                (HashMap.lookup label labelArgs)
+          , varTys = \var ->
+              Maybe.fromMaybe
+                (error $ show var <> " missing from variable types map")
+                (HashMap.lookup var varTys)
+          }
+    , body = program (Return simple)
+    }
+  where
+    (AnfBuilderState{labelArgs, varTys, program}, (args', simple)) =
+      runIdentity . runAnfBuilderT $ do
+        vars <- traverse (const freshVar) args
+        body' <- fromCoreExpr (\index -> vars !! fromIntegral @Word64 @Int index) body
+        pure (zipWith (\var (_, argTy) -> (var, argTy)) vars args, body')
 
 fromCoreExpr :: (Monad m) => (a -> Var) -> Core.Expr a -> AnfBuilderT m Simple
 fromCoreExpr toVar expr =
