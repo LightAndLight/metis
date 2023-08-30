@@ -29,6 +29,7 @@ import Metis.InstSelection (
   RegisterFunctionArgument (..),
   Value (..),
   initialInstSelectionState,
+  instSelectionFunction_X86_64,
   instSelection_X86_64,
   moveRegisterFunctionArguments,
  )
@@ -198,4 +199,50 @@ spec =
                               "mov %rax, %rbx"
                             , "pop %rax"
                             , "add %rbx, %rax"
+                            ]
+    describe "instSelectionFunction_X86_64" $ do
+      let
+        shouldCompileTo :: (HasCallStack) => Core.Function -> [Lazy.Text] -> IO ()
+        shouldCompileTo function expectedOutput =
+          withSystemTempFile "metis-instruction-selection-logs.txt" $ \tempFilePath tempFileHandle ->
+            ( do
+                let function' = Anf.fromFunction function
+                let liveness = Liveness.liveness function'.body
+                let nameTys = \case
+                      "f" -> Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64
+                      _ -> undefined
+
+                asm <-
+                  fmap (printAsm printInstruction_X86_64) . runAsmBuilderT . handleLogging tempFileHandle . void $
+                    instSelectionFunction_X86_64 nameTys (generalPurposeRegisters @X86_64) liveness function'
+
+                hClose tempFileHandle
+
+                Builder.toLazyText asm `shouldBe` Text.Lazy.unlines expectedOutput
+            )
+              `catch` ( \(input :: SomeException) -> do
+                          let failuresLocation = "./test-failures/"
+                          let resultPath = failuresLocation </> FilePath.takeFileName tempFilePath
+                          let message = "\nLogs saved in " <> resultPath <> "\n\n"
+                          _ <- runProgram "mkdir" ["-p", failuresLocation] NoStdin IgnoreStdout
+                          _ <- runProgram "mv" [tempFilePath, resultPath] NoStdin IgnoreStdout
+                          let
+                            output
+                              | Just e <- fromException @HUnit.HUnitFailure input = hunitFailureToResult (Just message) e
+                              | otherwise = Failure Nothing $ Error (Just message) input
+                          throwIO output
+                      )
+
+      it "f(x : Uint64, y : Uint64) : Uint64 = x + y" $
+        Core.Function
+          { name = "f"
+          , args = [("x", Type.Uint64), ("y", Type.Uint64)]
+          , retTy = Type.Uint64
+          , body = Core.Add Type.Uint64 (Core.Var 0) (Core.Var 1)
+          }
+          `shouldCompileTo` [ ".text"
+                            , "f:"
+                            , "add %rbx, %rax"
+                            , "pop %rbp"
+                            , "ret"
                             ]

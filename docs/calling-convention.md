@@ -10,7 +10,7 @@ Note: assumes 64 bit pointer size.
 | offset_of(stack argument n-1) + size_of(stack argument n-1) | stack argument n      |
 | ...                                                         | ...                   |
 | offset_of(stack argument 0) + size_of(stack argument 0)     | stack argument 1      |
-| 16                                                          | stack argument 0      |
+| 8                                                           | stack argument 0      |
 | 0                                                           | caller's base pointer |
 | -size_of(stack local 1)                                     | stack local 0         |
 | offset_of(stack local 0) - size_of(stack local 1)           | stack local 1         |
@@ -53,6 +53,10 @@ When an output must be passed via the stack, the function recieves an extra poin
 1. Restore call-clobbered registers
 
 ## Callee obligations
+
+### Post-call
+
+1. Allocate stack space for locals
 
 ### Pre-return
 

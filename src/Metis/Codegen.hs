@@ -59,6 +59,8 @@ printInstruction_X86_64 inst =
       "jmp *" <> printRegister reg
     Jmp_m mem ->
       "jmp *" <> printMemory mem
+    Ret ->
+      "ret"
     Inst2_ir inst2 op2 ->
       -- AT&T syntax
       printInst2 inst2 <> " " <> printImmediate op2.src <> ", " <> printRegister op2.dest

@@ -23,6 +23,7 @@ module Metis.Isa (
   Mov (..),
   Pop (..),
   Push (..),
+  Ret (..),
   Sub (..),
   Xor (..),
 ) where
@@ -76,6 +77,7 @@ class Pop isa a where pop :: a -> Instruction isa
 class Push isa a where push :: a -> Instruction isa
 class Jmp isa a where jmp :: a -> Instruction isa
 class Je isa a where je :: a -> Instruction isa
+class Ret isa a where ret :: a -> Instruction isa
 
 data Op2 src dest = Op2 {src :: src, dest :: dest}
   deriving (Eq, Show)

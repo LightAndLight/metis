@@ -22,7 +22,6 @@ module Metis.InstSelection (
   moveRegisterFunctionArguments,
 ) where
 
-import Control.Lens (Field1 (_1))
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.Reader (ReaderT, runReaderT)
 import Control.Monad.Reader.Class (MonadReader, asks)
@@ -64,6 +63,7 @@ import Metis.Isa (
   mov,
   pop,
   push,
+  ret,
   sub,
  )
 import Metis.Isa.X86_64 (Register (..), X86_64)
@@ -209,8 +209,9 @@ allocLocation size = do
   case Seq.viewl available of
     Seq.EmptyL -> do
       offset <- gets (.nextStackOffset)
-      let location = Stack offset
-      modify (\s -> s{nextStackOffset = offset - fromIntegral @Word64 @Int64 size})
+      let nextStackOffset = offset - fromIntegral @Word64 @Int64 size
+      let location = Stack nextStackOffset
+      modify (\s -> s{nextStackOffset})
       pure location
     register Seq.:< available' -> do
       modify (\s -> s{available = available'})
@@ -631,12 +632,28 @@ instSelectionFunction_X86_64 ::
   m ()
 instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
   let initial = initialInstSelectionState initialAvailable liveness function.name []
-  ((), s') <- runInstSelectionT nameTys function.bodyInfo initial $ do
-    setupArguments function.args
-    -- TODO: something for values that are returned via stack
-    value <- instSelectionExpr_X86_64 mempty function.body
-    _ value
-    pure ()
+  rec let localsSize = fromIntegral @Int64 @Word64 (-s'.nextStackOffset)
+      ((), s') <- runInstSelectionT nameTys function.bodyInfo initial $ do
+        stackArgumentsSize <- setupArguments function.args
+        emit [sub Op2{dest = Rsp, src = imm localsSize} | localsSize > 0]
+        -- TODO: something for values that are returned via stack
+        value <- instSelectionExpr_X86_64 mempty function.body
+        case Type.callingConventionOf function.retTy of
+          Type.Register ->
+            emit $
+              case value of
+                ValueAt (Register register) ->
+                  [mov Op2{src = register, dest = Rax} | register /= Rax]
+                ValueAt (Stack offset) ->
+                  [mov Op2{src = Mem{base = Rbp, offset}, dest = Rax}]
+                Address label ->
+                  [mov Op2{src = imm label, dest = Rax}]
+          Type.Composite{} -> error "TODO: composite return values"
+        emit $
+          [add Op2{dest = Rsp, src = imm localsSize} | localsSize > 0]
+            <> [pop Rbp]
+            <> [add Op2{dest = Rsp, src = imm stackArgumentsSize} | stackArgumentsSize > 0]
+            <> [ret ()]
 
   traverse_
     (\Block{label, attributes, instructions} -> Asm.block label attributes instructions)
@@ -652,10 +669,10 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
   where
     {- TODO: this code is basically the same as `setupFunctionArguments`. Make it the same code?
     -}
-    setupArguments :: (MonadState (InstSelectionState isa) m) => [(Anf.Var, Type)] -> m ()
+    setupArguments :: (MonadState (InstSelectionState isa) m) => [(Anf.Var, Type)] -> m Word64
     setupArguments args =
       case args of
-        [] -> pure ()
+        [] -> pure 0
         (argVar, argTy) : args' -> do
           case Type.callingConventionOf argTy of
             Type.Register -> do
@@ -671,19 +688,23 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
                     )
                   setupArguments args'
                 Seq.EmptyL ->
-                  setupStackArguments (2 * fromIntegral @Word64 @Int64 Type.pointerSize) args'
+                  setupStackArguments (fromIntegral @Word64 @Int64 Type.pointerSize) 0 args'
             Type.Composite{} ->
               error "TODO: composite function arguments"
 
-    setupStackArguments :: (MonadState (InstSelectionState isa) m) => Int64 -> [(Anf.Var, Type)] -> m ()
-    setupStackArguments offset args =
+    setupStackArguments :: (MonadState (InstSelectionState isa) m) => Int64 -> Word64 -> [(Anf.Var, Type)] -> m Word64
+    setupStackArguments offset size args =
       case args of
-        [] -> pure ()
+        [] -> pure size
         (argVar, argTy) : args' ->
           case Type.callingConventionOf argTy of
             Type.Register -> do
               modify (\s -> s{locations = HashMap.insert argVar (Stack offset) s.locations})
-              setupStackArguments (offset + fromIntegral @Word64 @Int64 (Type.sizeOf argTy)) args'
+              let argTySize = Type.sizeOf argTy
+              setupStackArguments
+                (offset + fromIntegral @Word64 @Int64 argTySize)
+                (size + argTySize)
+                args'
             Type.Composite{} -> error "TODO: composite stack function arguments"
 
 instSelectionExpr_X86_64 ::

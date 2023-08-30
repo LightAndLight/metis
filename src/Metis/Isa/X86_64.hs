@@ -22,6 +22,7 @@ import Metis.Isa (
   Op2,
   Pop (..),
   Push (..),
+  Ret (..),
   Sub (..),
   Symbol (..),
   Xor (..),
@@ -59,6 +60,7 @@ instance Isa X86_64 where
     | Jmp_s Symbol
     | Jmp_r (Register X86_64)
     | Jmp_m (Memory X86_64)
+    | Ret
     | Inst2_ir Inst2 (Op2 Immediate (Register X86_64))
     | Inst2_im Inst2 (Op2 Immediate (Memory X86_64))
     | Inst2_rr Inst2 (Op2 (Register X86_64) (Register X86_64))
@@ -158,3 +160,5 @@ instance Je X86_64 Symbol where je = Je_s
 instance Jmp X86_64 Symbol where jmp = Jmp_s
 instance Jmp X86_64 (Register X86_64) where jmp = Jmp_r
 instance Jmp X86_64 (Memory X86_64) where jmp = Jmp_m
+
+instance Ret X86_64 () where ret () = Ret

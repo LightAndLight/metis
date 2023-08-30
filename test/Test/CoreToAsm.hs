@@ -158,10 +158,10 @@ spec =
             [ ".text"
             , "main:"
             , "mov $99, %rax"
-            , "mov $100, 0(%rbp)"
-            , "mov $101, -8(%rbp)"
-            , "add 0(%rbp), %rax"
+            , "mov $100, -8(%rbp)"
+            , "mov $101, -16(%rbp)"
             , "add -8(%rbp), %rax"
+            , "add -16(%rbp), %rax"
             ]
         }
     , TestCase
