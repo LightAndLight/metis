@@ -7,7 +7,6 @@ module Test.InstSelection (spec) where
 
 import Bound.Scope.Simple (toScope)
 import Bound.Var (Var (..))
-import Control.Exception (SomeException, catch, fromException, throwIO)
 import Control.Monad (void)
 import Control.Monad.State.Class (modify)
 import Control.Monad.State.Strict (evalState)
@@ -16,12 +15,11 @@ import qualified Data.Text.Lazy as Lazy (Text)
 import qualified Data.Text.Lazy as Text.Lazy
 import qualified Data.Text.Lazy.Builder as Builder
 import Data.Void (Void, absurd)
-import ErrorReporting (hunitFailureToResult)
+import ErrorReporting (saveLogsOnFailure)
 import qualified Metis.Anf as Anf
 import Metis.Asm (BlockAttribute (..), printAsm)
 import Metis.Asm.Builder (runAsmBuilderT)
 import Metis.Codegen (printInstruction_X86_64)
-import Metis.Compile (Stdin (..), Stdout (..), runProgram)
 import qualified Metis.Core as Core
 import Metis.InstSelection (
   InstSelectionState (..),
@@ -39,13 +37,9 @@ import qualified Metis.Literal as Literal
 import qualified Metis.Liveness as Liveness
 import Metis.Log (handleLogging)
 import qualified Metis.Type as Type
-import System.FilePath ((</>))
-import qualified System.FilePath as FilePath
 import System.IO (hClose)
 import System.IO.Temp (withSystemTempFile)
-import qualified Test.HUnit.Lang as HUnit
 import Test.Hspec (HasCallStack, Spec, describe, it, shouldBe)
-import Test.Hspec.Core.Spec (FailureReason (..), ResultStatus (..))
 
 spec :: Spec
 spec =
@@ -103,33 +97,20 @@ spec =
         shouldCompileTo :: (HasCallStack) => Core.Expr Void -> [Lazy.Text] -> IO ()
         shouldCompileTo expr expectedOutput =
           withSystemTempFile "metis-instruction-selection-logs.txt" $ \tempFilePath tempFileHandle ->
-            ( do
-                let (anfInfo, anf) = Anf.fromCore absurd expr
-                let liveness = Liveness.liveness anf
-                let nameTys = \case
-                      "f" -> Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64
-                      _ -> undefined
+            saveLogsOnFailure tempFilePath $ do
+              let (anfInfo, anf) = Anf.fromCore absurd expr
+              let liveness = Liveness.liveness anf
+              let nameTys = \case
+                    "f" -> Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64
+                    _ -> undefined
 
-                asm <-
-                  fmap (printAsm printInstruction_X86_64) . runAsmBuilderT . handleLogging tempFileHandle . void $
-                    instSelection_X86_64 nameTys (generalPurposeRegisters @X86_64) anfInfo anf liveness "main" [Global]
+              asm <-
+                fmap (printAsm printInstruction_X86_64) . runAsmBuilderT . handleLogging tempFileHandle . void $
+                  instSelection_X86_64 nameTys (generalPurposeRegisters @X86_64) anfInfo anf liveness "main" [Global]
 
-                hClose tempFileHandle
+              hClose tempFileHandle
 
-                Builder.toLazyText asm `shouldBe` Text.Lazy.unlines expectedOutput
-            )
-              `catch` ( \(input :: SomeException) -> do
-                          let failuresLocation = "./test-failures/"
-                          let resultPath = failuresLocation </> FilePath.takeFileName tempFilePath
-                          let message = "\nLogs saved in " <> resultPath <> "\n\n"
-                          _ <- runProgram "mkdir" ["-p", failuresLocation] NoStdin IgnoreStdout
-                          _ <- runProgram "mv" [tempFilePath, resultPath] NoStdin IgnoreStdout
-                          let
-                            output
-                              | Just e <- fromException @HUnit.HUnitFailure input = hunitFailureToResult (Just message) e
-                              | otherwise = Failure Nothing $ Error (Just message) input
-                          throwIO output
-                      )
+              Builder.toLazyText asm `shouldBe` Text.Lazy.unlines expectedOutput
 
       it "f : Fn (Uint64, Uint64) Uint64 |- let x = 1; let y = 2; f(x, y)" $
         ( Core.Let Type.Uint64 (Just "x") Type.Uint64 (Core.Literal $ Literal.Uint64 1) . toScope $
@@ -205,33 +186,20 @@ spec =
         shouldCompileTo' :: (HasCallStack) => Seq (Register X86_64) -> Core.Function -> [Lazy.Text] -> IO ()
         shouldCompileTo' available function expectedOutput =
           withSystemTempFile "metis-instruction-selection-logs.txt" $ \tempFilePath tempFileHandle ->
-            ( do
-                let function' = Anf.fromFunction function
-                let liveness = Liveness.liveness function'.body
-                let nameTys = \case
-                      "f" -> Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64
-                      _ -> undefined
+            saveLogsOnFailure tempFilePath $ do
+              let function' = Anf.fromFunction function
+              let liveness = Liveness.liveness function'.body
+              let nameTys = \case
+                    "f" -> Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64
+                    _ -> undefined
 
-                asm <-
-                  fmap (printAsm printInstruction_X86_64) . runAsmBuilderT . handleLogging tempFileHandle . void $
-                    instSelectionFunction_X86_64 nameTys available liveness function'
+              asm <-
+                fmap (printAsm printInstruction_X86_64) . runAsmBuilderT . handleLogging tempFileHandle . void $
+                  instSelectionFunction_X86_64 nameTys available liveness function'
 
-                hClose tempFileHandle
+              hClose tempFileHandle
 
-                Builder.toLazyText asm `shouldBe` Text.Lazy.unlines expectedOutput
-            )
-              `catch` ( \(input :: SomeException) -> do
-                          let failuresLocation = "./test-failures/"
-                          let resultPath = failuresLocation </> FilePath.takeFileName tempFilePath
-                          let message = "\nLogs saved in " <> resultPath <> "\n\n"
-                          _ <- runProgram "mkdir" ["-p", failuresLocation] NoStdin IgnoreStdout
-                          _ <- runProgram "mv" [tempFilePath, resultPath] NoStdin IgnoreStdout
-                          let
-                            output
-                              | Just e <- fromException @HUnit.HUnitFailure input = hunitFailureToResult (Just message) e
-                              | otherwise = Failure Nothing $ Error (Just message) input
-                          throwIO output
-                      )
+              Builder.toLazyText asm `shouldBe` Text.Lazy.unlines expectedOutput
 
         shouldCompileTo :: (HasCallStack) => Core.Function -> [Lazy.Text] -> IO ()
         shouldCompileTo = shouldCompileTo' (generalPurposeRegisters @X86_64)
