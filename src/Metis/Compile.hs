@@ -17,6 +17,10 @@ module Metis.Compile (
 
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.IO.Class (MonadIO, liftIO)
+import Data.Buildable (ifromListL')
+import Data.Foldable (for_)
+import qualified Data.HashMap.Strict as HashMap
+import qualified Data.Maybe as Maybe
 import Data.Text (Text)
 import qualified Data.Text.IO as Text.IO
 import Data.Text.Lazy.Builder (Builder)
@@ -30,12 +34,12 @@ import qualified Metis.Asm.Builder as Asm (runAsmBuilderT)
 import qualified Metis.Asm.Class as Asm (block, string)
 import Metis.Codegen (printInstruction_X86_64)
 import qualified Metis.Core as Core
-import Metis.InstSelection (Location (..), Value (..), instSelection_X86_64)
+import Metis.InstSelection (Location (..), Value (..), instSelectionFunction_X86_64, instSelection_X86_64)
 import Metis.Isa (Memory (..), Op2 (..), Symbol (..), call, generalPurposeRegisters, imm, lea, mov, xor)
 import Metis.Isa.X86_64 (Register (..), X86_64)
 import qualified Metis.Liveness as Liveness
 import Metis.Log (noLogging)
-import Metis.Type (Type)
+import qualified Metis.Type as Type
 import qualified System.Directory as Directory
 import qualified System.Environment
 import System.Exit (ExitCode (..))
@@ -137,25 +141,31 @@ link inFile outFile = do
     NoStdin
     IgnoreStdout
 
-compile :: (MonadFix m, MonadIO m) => FilePath -> (Text -> Type) -> Core.Expr Void -> FilePath -> m ()
-compile buildDir nameTys expr outPath = do
+compile :: (MonadFix m, MonadIO m) => FilePath -> [Core.Function] -> Core.Expr Void -> FilePath -> m ()
+compile buildDir definitions expr outPath = do
   liftIO $ Directory.createDirectoryIfMissing True buildDir
 
   let programName = FilePath.takeBaseName outPath
 
-  let (anfInfo, anf) = Anf.fromCore absurd expr
-  let liveness = Liveness.liveness anf
-  asm <- fmap (Asm.printAsm printInstruction_X86_64) . Asm.runAsmBuilderT $ do
-    resultValue <-
-      noLogging $
-        instSelection_X86_64
-          nameTys
-          (generalPurposeRegisters @X86_64)
-          anfInfo
-          anf
-          liveness
-          "main"
-          [Asm.Global]
+  let nameTysMap = ifromListL' $ fmap (\Core.Function{name, args, retTy} -> (name, Type.Fn (fmap snd args) retTy)) definitions
+  let nameTys name = Maybe.fromMaybe (error $ show name <> " missing from name types map") $ HashMap.lookup name nameTysMap
+  let availableRegisters = generalPurposeRegisters @X86_64
+  asm <- fmap (Asm.printAsm printInstruction_X86_64) . Asm.runAsmBuilderT . noLogging $ do
+    for_ definitions $ \function -> do
+      let function' = Anf.fromFunction function
+      let liveness = Liveness.liveness function'.body
+      instSelectionFunction_X86_64 nameTys availableRegisters liveness function'
+    resultValue <- do
+      let (anfInfo, anf) = Anf.fromCore absurd expr
+      let liveness = Liveness.liveness anf
+      instSelection_X86_64
+        nameTys
+        availableRegisters
+        anfInfo
+        anf
+        liveness
+        "main"
+        [Asm.Global]
     formatString <- Asm.string "%u\n"
     _ <-
       Asm.block
