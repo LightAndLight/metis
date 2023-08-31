@@ -25,6 +25,7 @@ common warnings
 library
     import:           warnings
     exposed-modules:  
+        Data.Buildable
         Metis.InstSelection
         Metis.Anf
         Metis.Asm
@@ -98,6 +99,7 @@ test-suite metis-test
         process,
         temporary,
         text,
+        unordered-containers,
 
         -- better test failure behaviours 
         call-stack,
