@@ -31,7 +31,7 @@ import Metis.InstSelection (
   instSelection_X86_64,
   moveRegisterFunctionArguments,
  )
-import Metis.Isa (Isa (generalPurposeRegisters), Op2 (..), mov)
+import Metis.Isa (Op2 (..), generalPurposeRegisters, mov)
 import Metis.Isa.X86_64 (Register (..), X86_64)
 import qualified Metis.Literal as Literal
 import qualified Metis.Liveness as Liveness

@@ -128,3 +128,24 @@ spec =
               $ Anf.Return (Anf.Var $ Anf.MkVar 8)
 
       snd (Anf.fromCore absurd core) `shouldBe` anf
+    it "let x = 1; let y = 2; 3 + f(x, y)" $ do
+      let
+        core =
+          Let Type.Uint64 (Just "x") Type.Uint64 (Literal $ Literal.Uint64 1) . toScope $
+            Let Type.Uint64 (Just "y") Type.Uint64 (Literal $ Literal.Uint64 2) . toScope $
+              Add Type.Uint64 (Literal $ Literal.Uint64 3) (Call Type.Uint64 (Name "f") [Var . F $ B (), Var $ B ()])
+
+      {-
+      %0 = 1
+      %1 = 2
+      %2 = f(%0, %1)
+      %3 = 3 + %2
+      -}
+      let uint64Info = Anf.VarInfo{size = 8}
+      let anf =
+            Anf.LetS (Anf.MkVar 0) uint64Info (Anf.Literal $ Literal.Uint64 1) $
+              Anf.LetS (Anf.MkVar 1) uint64Info (Anf.Literal $ Literal.Uint64 2) $
+                Anf.LetC (Anf.MkVar 2) uint64Info (Anf.Call (Anf.Name "f") [Anf.Var $ Anf.MkVar 0, Anf.Var $ Anf.MkVar 1]) $
+                  Anf.LetC (Anf.MkVar 3) uint64Info (Anf.Binop Anf.Add (Anf.Literal $ Literal.Uint64 3) (Anf.Var $ Anf.MkVar 2)) $
+                    Anf.Return (Anf.Var $ Anf.MkVar 3)
+      snd (Anf.fromCore absurd core) `shouldBe` anf

@@ -1,31 +1,40 @@
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedLists #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Test.CoreToAsm (spec) where
 
 import Bound.Scope.Simple (toScope)
 import Bound.Var (Var (..))
+import Data.Buildable (ifromListL')
 import Data.CallStack (HasCallStack)
-import Data.Foldable (traverse_)
+import Data.Foldable (for_, traverse_)
+import qualified Data.HashMap.Strict as HashMap
+import qualified Data.Maybe as Maybe
 import Data.Sequence (Seq)
 import qualified Data.Text.Lazy as Text.Lazy
 import Data.Text.Lazy.Builder (Builder)
 import qualified Data.Text.Lazy.Builder as Text.Lazy.Builder
 import Data.Void (Void, absurd)
+import ErrorReporting (saveLogsOnFailure)
 import qualified Metis.Anf as Anf
 import Metis.Asm (printAsm)
 import Metis.Asm.Builder (runAsmBuilderT)
 import Metis.Codegen (printInstruction_X86_64)
-import Metis.Core (Expr (..))
-import Metis.InstSelection (instSelection_X86_64)
+import Metis.Core (Expr (..), Function (..))
+import Metis.InstSelection (instSelectionFunction_X86_64, instSelection_X86_64)
 import Metis.Isa (generalPurposeRegisters)
 import Metis.Isa.X86_64 (Register (..), X86_64)
 import qualified Metis.Literal as Literal
 import qualified Metis.Liveness as Liveness
-import Metis.Log (noLogging)
+import Metis.Log (handleLogging)
 import qualified Metis.Type as Type (Type (..))
 import System.Exit (ExitCode (..))
+import System.IO (hClose)
+import System.IO.Temp (withSystemTempFile)
 import qualified System.Process as Process
 import Test.Hspec (Spec, SpecWith, describe, expectationFailure, it, shouldBe)
 
@@ -35,6 +44,7 @@ data TestCase where
     -- instead of the location in `testCase` where the failure happened.
     (HasCallStack) =>
     { title :: String
+    , definitions :: [Function]
     , expr :: Expr Void
     , availableRegisters :: Seq (Register X86_64)
     , expectedOutput :: [Builder]
@@ -42,14 +52,33 @@ data TestCase where
     TestCase
 
 testCase :: TestCase -> SpecWith ()
-testCase TestCase{title, expr, availableRegisters, expectedOutput} =
-  it title $ do
-    let (anfInfo, anf) = Anf.fromCore absurd expr
-    let liveness = Liveness.liveness anf
-    asm <- fmap (Text.Lazy.Builder.toLazyText . printAsm printInstruction_X86_64) . runAsmBuilderT . noLogging $ do
-      let nameTys = const undefined
-      _ <- instSelection_X86_64 nameTys availableRegisters anfInfo anf liveness "main" []
+testCase TestCase{title, definitions, expr, availableRegisters, expectedOutput} =
+  it title . withSystemTempFile "metis-coretoasm-logs.txt" $ \tempFilePath tempFileHandle -> saveLogsOnFailure tempFilePath $ do
+    asm <- fmap (Text.Lazy.Builder.toLazyText . printAsm printInstruction_X86_64) . runAsmBuilderT . handleLogging tempFileHandle $ do
+      let nameTysMap =
+            ifromListL' $
+              fmap (\Function{name, args, retTy} -> (name, Type.Fn (fmap snd args) retTy)) definitions
+      let nameTys name = Maybe.fromMaybe undefined $ HashMap.lookup name nameTysMap
+
+      for_ definitions $ \function -> do
+        let function' = Anf.fromFunction function
+        let liveness = Liveness.liveness function'.body
+        instSelectionFunction_X86_64 nameTys availableRegisters liveness function'
+
+      _ <- do
+        let (anfInfo, anf) = Anf.fromCore absurd expr
+        let liveness = Liveness.liveness anf
+        instSelection_X86_64
+          nameTys
+          availableRegisters
+          anfInfo
+          anf
+          liveness
+          "main"
+          []
+
       pure ()
+    hClose tempFileHandle
     asm `shouldBe` Text.Lazy.Builder.toLazyText (foldMap @[] (<> "\n") expectedOutput)
 
     (exitCode, stdout, stderr) <- Process.readProcessWithExitCode "as" ["-o", "/dev/null"] (Text.Lazy.unpack asm)
@@ -69,6 +98,7 @@ spec =
   describe "Test.CoreToAsm" . traverse_ @[] testCase $
     [ TestCase
         { title = "99 + 99"
+        , definitions = []
         , expr =
             let
               lit99 = Literal $ Literal.Uint64 99
@@ -85,6 +115,7 @@ spec =
         }
     , TestCase
         { title = "let x = 99; x + x"
+        , definitions = []
         , expr =
             let
               lit99 = Literal $ Literal.Uint64 99
@@ -101,6 +132,7 @@ spec =
         }
     , TestCase
         { title = "let x = 99; let y = 100; x + y"
+        , definitions = []
         , expr =
             let
               lit99 = Literal $ Literal.Uint64 99
@@ -120,6 +152,7 @@ spec =
         }
     , TestCase
         { title = "let x = 99; let y = 100; let z = 101; x + y + z"
+        , definitions = []
         , expr =
             let
               lit99 = Literal $ Literal.Uint64 99
@@ -143,6 +176,7 @@ spec =
         }
     , TestCase
         { title = "let x = 99; let y = 100; let z = 101; x + y + z (only %rax)"
+        , definitions = []
         , expr =
             let
               lit99 = Literal $ Literal.Uint64 99
@@ -166,6 +200,7 @@ spec =
         }
     , TestCase
         { title = "let x = if true then let y = 1; y + 98 else let y = 2; let z = 3; y + z + 95; x + x"
+        , definitions = []
         , expr =
             let
               lit98 = Literal $ Literal.Uint64 98
@@ -226,6 +261,7 @@ spec =
         }
     , TestCase
         { title = "let x = 3; let y = if true then x else 22; x + y"
+        , definitions = []
         , expr =
             let
               lit3 = Literal $ Literal.Uint64 3
@@ -260,6 +296,51 @@ spec =
             , "jmp block_1"
             , "block_1:"
             , "add %rbx, %rax"
+            ]
+        }
+    , TestCase
+        { title = "fn f(x : Uint64, y : Uint64) : Uint64 = x + y; fn main() = let x = 1; let y = 2; 3 + f(x, y)"
+        , definitions =
+            [ Function
+                { name = "f"
+                , args = [("x", Type.Uint64), ("y", Type.Uint64)]
+                , retTy = Type.Uint64
+                , body =
+                    Add
+                      Type.Uint64
+                      (Var 0)
+                      (Var 1)
+                }
+            ]
+        , expr =
+            Let Type.Uint64 (Just "x") Type.Uint64 (Literal $ Literal.Uint64 1) . toScope $
+              Let Type.Uint64 (Just "y") Type.Uint64 (Literal $ Literal.Uint64 2) . toScope $
+                Add Type.Uint64 (Literal $ Literal.Uint64 3) (Call Type.Uint64 (Name "f") [Var . F $ B (), Var $ B ()])
+        , availableRegisters = generalPurposeRegisters @X86_64
+        , expectedOutput =
+            [ ".text"
+            , "f:"
+            , -- `x` is in `rax`
+              -- `y` is in `rbx`
+              "add %rbx, %rax"
+            , "pop %rbp"
+            , "ret"
+            , {-
+              %0 = 1
+              %1 = 2
+              %2 = f(%0, %1)
+              %3 = 3 + %2
+              -}
+              "main:"
+            , "mov $1, %rax"
+            , "mov $2, %rbx"
+            , "push $after"
+            , "push %rbp"
+            , "mov %rsp, %rbp"
+            , "jmp f"
+            , "after:"
+            , "mov $3, %rbx"
+            , "add %rax, %rbx"
             ]
         }
     ]
