@@ -343,4 +343,51 @@ spec =
             , "add %rax, %rbx"
             ]
         }
+    , TestCase
+        { title = "fn f(x : Uint64, y : Uint64) : Uint64 = x + y; fn main() = let x = 1; let y = 2; x + f(x, y)"
+        , definitions =
+            [ Function
+                { name = "f"
+                , args = [("x", Type.Uint64), ("y", Type.Uint64)]
+                , retTy = Type.Uint64
+                , body =
+                    Add
+                      Type.Uint64
+                      (Var 0)
+                      (Var 1)
+                }
+            ]
+        , expr =
+            Let Type.Uint64 (Just "x") Type.Uint64 (Literal $ Literal.Uint64 1) . toScope $
+              Let Type.Uint64 (Just "y") Type.Uint64 (Literal $ Literal.Uint64 2) . toScope $
+                Add Type.Uint64 (Var . F $ B ()) (Call Type.Uint64 (Name "f") [Var . F $ B (), Var $ B ()])
+        , availableRegisters = generalPurposeRegisters @X86_64
+        , expectedOutput =
+            [ ".text"
+            , "f:"
+            , -- `x` is in `rax`
+              -- `y` is in `rbx`
+              "add %rbx, %rax"
+            , "pop %rbp"
+            , "ret"
+            , {-
+              %0 = 1
+              %1 = 2
+              %2 = f(%0, %1)
+              %3 = %0 + %2
+              -}
+              "main:"
+            , "mov $1, %rax"
+            , "mov $2, %rbx"
+            , "push %rax"
+            , "push $after"
+            , "push %rbp"
+            , "mov %rsp, %rbp"
+            , "jmp f"
+            , "after:"
+            , "mov %rax, %rbx"
+            , "pop %rax"
+            , "add %rbx, %rax"
+            ]
+        }
     ]
