@@ -298,15 +298,12 @@ instSelectionSimple_X86_64 simple =
     Anf.Name name ->
       pure $ Address Symbol{value = name}
 
-freeKills :: (Isa isa, MonadState (InstSelectionState isa) m, MonadLog m) => Anf.Var -> m ()
-freeKills var = do
-  liveness <- lookupLiveness var
-  Log.trace . Text.pack $ show var <> " kills " <> show liveness.kills
-
+freeVars :: (Isa isa, MonadState (InstSelectionState isa) m, MonadLog m) => HashSet Anf.Var -> m ()
+freeVars vars = do
   locations <- gets (.locations)
   let freed =
         HashMap.Lazy.foldrWithKey'
-          (\k v acc -> if k `HashSet.member` liveness.kills then v : acc else acc)
+          (\k v acc -> if k `HashSet.member` vars then v : acc else acc)
           []
           locations
   Log.trace . Text.pack $ "freed: " <> show freed
@@ -325,6 +322,13 @@ freeKills var = do
                 freed
           }
     )
+
+freeKills :: (Isa isa, MonadState (InstSelectionState isa) m, MonadLog m) => Anf.Var -> m ()
+freeKills var = do
+  liveness <- lookupLiveness var
+  Log.trace . Text.pack $ show var <> " kills " <> show liveness.kills
+
+  freeVars liveness.kills
 
 data FunctionArguments isa = FunctionArguments
   { registerFunctionArguments :: [RegisterFunctionArgument isa]
@@ -830,8 +834,6 @@ instSelectionExpr_X86_64 varSizes expr =
               for_ (Seq.reverse callerSavedRegisters) $ \register -> emit [pop register]
             ty -> error $ "trying to call a non-function type: " <> show ty
         Anf.Binop op a b -> do
-          freeKills var
-
           let op' :: (Add X86_64 a b, Sub X86_64 a b) => Op2 a b -> Instruction X86_64
               op' =
                 case op of
@@ -840,6 +842,7 @@ instSelectionExpr_X86_64 varSizes expr =
 
           -- Binop convention: the first argument is the "destination". Motivated by subtraction
           -- in assembly, which is `dest := dest - src`.
+          liveness <- lookupLiveness var
           aLocation <-
             case a of
               Anf.Name name ->
@@ -847,20 +850,16 @@ instSelectionExpr_X86_64 varSizes expr =
               Anf.Literal lit ->
                 instSelectionLiteral_X86_64 lit
               Anf.Var aVar -> do
-                liveness <- lookupLiveness var
                 aLocation <- lookupLocation aVar
 
-                {- x86-64 2-operand instructions such as `add` and `sub` store their result in
-                their second operand (assuming AT&T syntax).
-
-                Thus for an A-normal form instruction like `%1 = add(%2, %3)`, `%1` and `%3`
-                need to be assigned the same location. The fast path is when `%1` kills `%3`:
-                after the instruction `%3` is no longer relevant, so `%1` can steal `%3`'s
+                {- In an A-normal form instruction like `%1 = add(%2, %3)`, `%1` and `%2`
+                need to be assigned the same location. The fast path is when `%1` kills `%2`:
+                after the instruction `%2` is no longer relevant, so `%1` can steal `%2`'s
                 location.
 
-                When `%1` *doesn't* kill `%3`, we have to assign a fresh location to `%1` and
-                move the contents of `%3` to this location before executing the instruction.
-                `%3` is still relevant later on so we have to preserve its value.
+                When `%1` *doesn't* kill `%2`, we have to assign a fresh location to `%1` and
+                move the contents of `%2` to this location before executing the instruction.
+                `%2` is still relevant later on so we have to preserve its value.
                 -}
                 if aVar `HashSet.member` liveness.kills
                   then do
@@ -956,6 +955,23 @@ instSelectionExpr_X86_64 varSizes expr =
                   , pop Rax
                   ]
 
+          freeVars $
+            case a of
+              Anf.Var aVar ->
+                {- When `a` is a variable we don't return its register to the pool.
+
+                If the variable is killed by this instruction, we have its register as the
+                destination for the instruction.
+
+                If the variable is not killed by this instruction, we have made sure its value
+                is preserved. When the value is preserved in a register, that register can't be
+                returned to the pool.
+                -}
+                HashSet.delete aVar liveness.kills
+              Anf.Name{} ->
+                liveness.kills
+              Anf.Literal{} ->
+                liveness.kills
           modify (\s -> s{locations = HashMap.Lazy.insert var aLocation s.locations})
 
       instSelectionExpr_X86_64 varSizes rest
