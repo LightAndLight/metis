@@ -25,7 +25,6 @@ common warnings
 library
     import:           warnings
     exposed-modules:  
-        Data.Buildable
         Metis.InstSelection
         Metis.Anf
         Metis.Asm
@@ -49,6 +48,7 @@ library
         deriving-compat,
         directory,
         filepath,
+        foldable-buildable,
         hashable,
         lens,
         mtl,

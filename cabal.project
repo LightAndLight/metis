@@ -1,4 +1,6 @@
-packages: .
+packages:
+  ./metis
+  ./foldable-buildable
 
 source-repository-package
     type: git
