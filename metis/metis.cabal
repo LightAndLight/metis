@@ -35,6 +35,7 @@ library
         Metis.Core
         Metis.Isa
         Metis.Isa.X86_64
+        Metis.Kind
         Metis.Literal
         Metis.Liveness
         Metis.Log
@@ -50,6 +51,7 @@ library
         filepath,
         foldable-buildable,
         hashable,
+        indexed-traversable,
         lens,
         mtl,
         process,

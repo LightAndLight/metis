@@ -37,6 +37,7 @@ livenessExpr labelArgVars expr =
         Var var -> (HashSet.singleton var, mempty, mempty)
         Name{} -> (mempty, mempty, mempty)
         Literal{} -> (mempty, mempty, mempty)
+        Type{} -> (mempty, mempty, mempty)
     LetS var _ value rest ->
       let
         (live, liveAt, labelArgVars') = livenessExpr labelArgVars rest
@@ -96,3 +97,4 @@ varsSimple simple =
     Var var -> HashSet.singleton var
     Name{} -> mempty
     Literal{} -> mempty
+    Type{} -> mempty

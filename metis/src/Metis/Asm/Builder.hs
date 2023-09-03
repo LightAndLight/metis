@@ -40,7 +40,7 @@ instance (Monad m) => MonadAsm isa (AsmBuilderT isa m) where
       modify (\s -> s{asm = s.asm{data_ = s.asm.data_ <> [DataString{label, content}]}})
       pure $ Symbol label
 
-  block label attributes instructions =
+  block label attributes statements =
     AsmBuilderT $ do
-      modify (\s -> s{asm = s.asm{text = s.asm.text <> [Block{label, attributes, instructions}]}})
+      modify (\s -> s{asm = s.asm{text = s.asm.text <> [Block{label, attributes, statements}]}})
       pure $ Symbol label

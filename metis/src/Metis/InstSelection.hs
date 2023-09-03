@@ -10,13 +10,13 @@
 
 module Metis.InstSelection (
   instSelection_X86_64,
+  instSelectionFunction_X86_64,
 
   -- * Internals
   Location (..),
   Value (..),
   InstSelectionState (..),
   initialInstSelectionState,
-  instSelectionFunction_X86_64,
   instSelectionExpr_X86_64,
   RegisterFunctionArgument (..),
   moveRegisterFunctionArguments,
@@ -28,6 +28,7 @@ import Control.Monad.Reader.Class (MonadReader, asks)
 import Control.Monad.State.Class (MonadState, gets, modify)
 import Control.Monad.State.Strict (State, StateT, runState, runStateT)
 import Data.Foldable (foldl', for_, traverse_)
+import Data.Foldable.WithIndex (ifor_)
 import qualified Data.HashMap.Lazy as HashMap.Lazy
 import qualified Data.HashMap.Lazy as Lazy (HashMap)
 import Data.HashMap.Strict (HashMap)
@@ -43,7 +44,7 @@ import qualified Data.Text as Text
 import Data.Word (Word64)
 import GHC.Stack (HasCallStack)
 import qualified Metis.Anf as Anf
-import Metis.Asm (Block (..), BlockAttribute)
+import Metis.Asm (Block (..), BlockAttribute, Directive (..), Statement (..))
 import Metis.Asm.Class (MonadAsm)
 import qualified Metis.Asm.Class as Asm
 import Metis.Isa (
@@ -67,6 +68,7 @@ import Metis.Isa (
   sub,
  )
 import Metis.Isa.X86_64 (Register (..), X86_64)
+import Metis.Kind (Kind)
 import Metis.Literal (Literal)
 import qualified Metis.Literal as Literal
 import Metis.Liveness (Liveness (..))
@@ -96,10 +98,11 @@ data InstSelectionState isa = InstSelectionState
   , locations :: Lazy.HashMap Anf.Var (Location isa)
   , labelArgLocations :: HashMap Anf.Var (Location isa)
   , liveness :: HashMap Anf.Var Liveness
+  , typeDicts :: HashMap Symbol (Type Anf.Var)
   , previousBlocks :: [Block isa]
   , currentBlockName :: Text
   , currentBlockAttributes :: [BlockAttribute]
-  , currentBlockInstructions :: [Instruction isa]
+  , currentBlockStatements :: [Statement isa]
   }
 
 initialInstSelectionState ::
@@ -115,10 +118,11 @@ initialInstSelectionState available liveness blockName blockAttributes =
     , locations = mempty
     , labelArgLocations = mempty
     , liveness
+    , typeDicts = mempty
     , previousBlocks = []
     , currentBlockName = blockName
     , currentBlockAttributes = blockAttributes
-    , currentBlockInstructions = []
+    , currentBlockStatements = []
     }
 
 lookupLocation :: (HasCallStack) => (MonadState (InstSelectionState isa) m) => Anf.Var -> m (Location isa)
@@ -133,8 +137,9 @@ lookupSize var varSizes = Maybe.fromMaybe (error $ show var <> " missing from si
 data InstSelectionEnv isa = InstSelectionEnv
   { labelArgs :: Anf.Var -> Anf.Var
   , labelArgLocations :: Lazy.HashMap Anf.Var (Location isa)
-  , nameTys :: Text -> Type
-  , varTys :: Anf.Var -> Type
+  , varKinds :: Anf.Var -> Kind
+  , nameTys :: Text -> Type Anf.Var
+  , varTys :: Anf.Var -> Type Anf.Var
   }
 
 lookupLabelArgLocation :: (HasCallStack) => (MonadReader (InstSelectionEnv isa) m) => Anf.Var -> m (Location isa)
@@ -150,7 +155,14 @@ emit ::
   [Instruction isa] ->
   m ()
 emit instructions =
-  modify (\s -> s{currentBlockInstructions = s.currentBlockInstructions <> instructions})
+  modify (\s -> s{currentBlockStatements = s.currentBlockStatements <> fmap Instruction instructions})
+
+dir ::
+  (MonadState (InstSelectionState isa) m) =>
+  Directive ->
+  m ()
+dir directive =
+  modify (\s -> s{currentBlockStatements = s.currentBlockStatements <> [Directive directive]})
 
 declareLabel ::
   (MonadState (InstSelectionState isa) m) =>
@@ -167,12 +179,12 @@ declareLabel value = do
                     <> [ Block
                           { label = s.currentBlockName
                           , attributes = s.currentBlockAttributes
-                          , instructions = s.currentBlockInstructions
+                          , statements = s.currentBlockStatements
                           }
                        ]
               , currentBlockName = value
               , currentBlockAttributes = []
-              , currentBlockInstructions = []
+              , currentBlockStatements = []
               }
         )
     )
@@ -191,12 +203,12 @@ beginBlock label =
                   <> [ Block
                         { label = s.currentBlockName
                         , attributes = s.currentBlockAttributes
-                        , instructions = s.currentBlockInstructions
+                        , statements = s.currentBlockStatements
                         }
                      ]
             , currentBlockName = label
             , currentBlockAttributes = []
-            , currentBlockInstructions = []
+            , currentBlockStatements = []
             }
       )
 
@@ -230,7 +242,7 @@ freeLocation location =
 
 runInstSelectionT ::
   (MonadFix m) =>
-  (Text -> Type) ->
+  (Text -> Type Anf.Var) ->
   Anf.ExprInfo ->
   InstSelectionState isa ->
   ReaderT (InstSelectionEnv isa) (StateT (InstSelectionState isa) m) a ->
@@ -244,6 +256,7 @@ runInstSelectionT nameTys exprInfo s ma = do
                 { labelArgs = exprInfo.labelArgs
                 , labelArgLocations = s'.labelArgLocations
                 , nameTys
+                , varKinds = exprInfo.varKinds
                 , varTys = exprInfo.varTys
                 }
           )
@@ -252,7 +265,7 @@ runInstSelectionT nameTys exprInfo s ma = do
 
 instSelection_X86_64 ::
   (MonadAsm X86_64 m, MonadLog m, MonadFix m) =>
-  (Text -> Type) ->
+  (Text -> Type Anf.Var) ->
   Seq (Register X86_64) ->
   Anf.ExprInfo ->
   Anf.Expr ->
@@ -267,8 +280,9 @@ instSelection_X86_64 nameTys available exprInfo expr liveness blockName blockAtt
       exprInfo
       (initialInstSelectionState available liveness blockName blockAttributes)
       (instSelectionExpr_X86_64 mempty expr)
-  traverse_ (\Block{label, attributes, instructions} -> Asm.block label attributes instructions) s.previousBlocks
-  _ <- Asm.block s.currentBlockName s.currentBlockAttributes s.currentBlockInstructions
+  _ s.typeDicts
+  traverse_ (\Block{label, attributes, statements} -> Asm.block label attributes statements) s.previousBlocks
+  _ <- Asm.block s.currentBlockName s.currentBlockAttributes s.currentBlockStatements
   pure a
 
 instSelectionLiteral_X86_64 ::
@@ -285,6 +299,39 @@ instSelectionLiteral_X86_64 lit = do
       emit [mov Op2{src = imm lit, dest = register}]
       pure location
 
+typeDict :: (MonadState (InstSelectionState X86_64) m, MonadLog m) => Type Anf.Var -> m Symbol
+typeDict ty = do
+  let label = Symbol{value = typeDictLabel ty}
+  modify (\s -> s{typeDicts = HashMap.insert label ty s.typeDicts})
+  pure label
+  where
+    typeDictLabel :: Type Anf.Var -> Text
+    typeDictLabel t =
+      case t of
+        Type.Var{} ->
+          error "impossible: can't generate type dict for variable"
+        Type.Uint64 ->
+          "type_Uint64"
+        Type.Bool ->
+          "type_Bool"
+        Type.Fn{} ->
+          "type_Fn"
+
+instSelectionType_X86_64 ::
+  (MonadState (InstSelectionState X86_64) m, MonadLog m) =>
+  Type Anf.Var ->
+  m (Value X86_64)
+instSelectionType_X86_64 ty = do
+  case ty of
+    Type.Var var ->
+      ValueAt <$> lookupLocation var
+    Type.Uint64 ->
+      Address <$> typeDict ty
+    Type.Bool ->
+      Address <$> typeDict ty
+    Type.Fn{} ->
+      Address <$> typeDict ty
+
 instSelectionSimple_X86_64 ::
   (MonadState (InstSelectionState X86_64) m, MonadLog m) =>
   Anf.Simple ->
@@ -295,6 +342,8 @@ instSelectionSimple_X86_64 simple =
       ValueAt <$> lookupLocation var
     Anf.Literal lit ->
       ValueAt <$> instSelectionLiteral_X86_64 lit
+    Anf.Type ty ->
+      instSelectionType_X86_64 ty
     Anf.Name name ->
       pure $ Address Symbol{value = name}
 
@@ -364,7 +413,7 @@ data StackFunctionArgument isa = StackFunctionArgument
 
 setupFunctionArguments ::
   Seq (Register X86_64) ->
-  [Type] ->
+  [Type Anf.Var] ->
   [Value X86_64] ->
   FunctionArguments X86_64
 setupFunctionArguments availableArgumentRegisters argTys argLocations =
@@ -412,7 +461,7 @@ on the stack.
 -}
 setupStackFunctionArguments ::
   Int64 ->
-  [Type] ->
+  [Type Anf.Var] ->
   [Value X86_64] ->
   FunctionArguments X86_64
 setupStackFunctionArguments offset argTys argLocations =
@@ -586,7 +635,7 @@ moveRegisterFunctionArguments registerRemapping arguments = do
             mov Op2{src = dest, dest = Mem{base = Rbp, offset = tempOffset}}
       ]
 
-getRegistersUsedByFunction :: forall isa. (Isa isa) => Seq (Register isa) -> [Type] -> Type -> HashSet (Register isa)
+getRegistersUsedByFunction :: forall isa. (Isa isa) => Seq (Register isa) -> [Type Anf.Var] -> Type Anf.Var -> HashSet (Register isa)
 getRegistersUsedByFunction registerPool argTys retTy =
   let
     ((), (_, toSave)) = runState (traverse_ goType argTys) (registerPool, mempty)
@@ -594,7 +643,7 @@ getRegistersUsedByFunction registerPool argTys retTy =
    in
     toSave'
   where
-    goType :: Type -> State (Seq (Register isa), HashSet (Register isa)) ()
+    goType :: Type Anf.Var -> State (Seq (Register isa), HashSet (Register isa)) ()
     goType ty = goCallingConvention (Type.callingConventionOf ty)
 
     goCallingConvention :: Type.CallingConvention -> State (Seq (Register isa), HashSet (Register isa)) ()
@@ -611,7 +660,7 @@ getRegistersUsedByFunction registerPool argTys retTy =
 
 instSelectionFunction_X86_64 ::
   (MonadAsm X86_64 m, MonadLog m, MonadFix m) =>
-  (Text -> Type) ->
+  (Text -> Type Anf.Var) ->
   Seq (Register X86_64) ->
   HashMap Anf.Var Liveness ->
   Anf.Function ->
@@ -644,21 +693,34 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
             <> [add Op2{dest = Rsp, src = imm stackArgumentsSize} | stackArgumentsSize > 0]
             <> [ret ()]
 
+  ifor_ s'.typeDicts $ \name ty ->
+    Asm.block name.value [] $
+      case ty of
+        Type.Var{} -> error "impossible: generating type dictionary for variable"
+        Type.Uint64 ->
+          [ Directive $ Quad 8
+          , _
+          ]
+        Type.Bool ->
+          [ Directive $ Quad 1
+          , _
+          ]
+
   traverse_
-    (\Block{label, attributes, instructions} -> Asm.block label attributes instructions)
+    (\Block{label, attributes, statements} -> Asm.block label attributes statements)
     s'.previousBlocks
 
   _ <-
     Asm.block
       s'.currentBlockName
       s'.currentBlockAttributes
-      s'.currentBlockInstructions
+      s'.currentBlockStatements
 
   pure ()
   where
     {- TODO: this code is basically the same as `setupFunctionArguments`. Make it the same code?
     -}
-    setupArguments :: (MonadState (InstSelectionState isa) m) => [(Anf.Var, Type)] -> m Word64
+    setupArguments :: (MonadState (InstSelectionState isa) m) => [(Anf.Var, Type Anf.Var)] -> m Word64
     setupArguments args =
       case args of
         [] -> pure 0
@@ -684,7 +746,7 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
             Type.Composite{} ->
               error "TODO: composite function arguments"
 
-    setupStackArguments :: (MonadState (InstSelectionState isa) m) => Int64 -> Word64 -> [(Anf.Var, Type)] -> m Word64
+    setupStackArguments :: (MonadState (InstSelectionState isa) m) => Int64 -> Word64 -> [(Anf.Var, Type Anf.Var)] -> m Word64
     setupStackArguments offset size args =
       case args of
         [] -> pure size
@@ -726,6 +788,8 @@ instSelectionExpr_X86_64 varSizes expr =
                 pure location
           Anf.Name name ->
             error "TODO: instSelectionExpr_X86_64/Name" name
+          Anf.Type ty ->
+            error "TODO: instSelectionExpr_X86_64/Type" ty
       modify (\s -> s{locations = HashMap.Lazy.insert var valueLocation s.locations})
 
       instSelectionExpr_X86_64 varSizes rest
@@ -739,10 +803,11 @@ instSelectionExpr_X86_64 varSizes expr =
           functionLocation <- instSelectionSimple_X86_64 function
           argLocations <- traverse instSelectionSimple_X86_64 args
 
+          varKinds <- asks (.varKinds)
           nameTys <- asks (.nameTys)
           varTys <- asks (.varTys)
-          case Anf.typeOf nameTys varTys function of
-            Type.Fn argTys retTy -> do
+          case Anf.typeOf varKinds nameTys varTys function of
+            Right (Type.Fn argTys retTy) -> do
               registersAvailableAtCall <- foldl' (flip HashSet.insert) mempty <$> gets (.available)
               registersKilledByCall <- do
                 liveness <- lookupLiveness var
@@ -847,6 +912,8 @@ instSelectionExpr_X86_64 varSizes expr =
             case a of
               Anf.Name name ->
                 error "TODO: instSelectionExpr_X86_64/Binop/a/Name" name
+              Anf.Type ty ->
+                error "TODO: instSelectionExpr_X86_64/Binop/a/Type" ty
               Anf.Literal lit ->
                 instSelectionLiteral_X86_64 lit
               Anf.Var aVar -> do
@@ -933,6 +1000,8 @@ instSelectionExpr_X86_64 varSizes expr =
           case b of
             Anf.Name name ->
               error "TODO: instSelectionExpr_X86_64/Binop/b/Name" name
+            Anf.Type ty ->
+              error "TODO: instSelectionExpr_X86_64/Binop/b/Type" ty
             Anf.Literal lit -> do
               case aLocation of
                 Stack aOffset ->
@@ -972,6 +1041,8 @@ instSelectionExpr_X86_64 varSizes expr =
                 liveness.kills
               Anf.Literal{} ->
                 liveness.kills
+              Anf.Type{} ->
+                liveness.kills
           modify (\s -> s{locations = HashMap.Lazy.insert var aLocation s.locations})
 
       instSelectionExpr_X86_64 varSizes rest
@@ -980,6 +1051,8 @@ instSelectionExpr_X86_64 varSizes expr =
         case cond of
           Anf.Name name ->
             error "TODO: instSelectionExpr_X86_64/IfThenElse/cond/Name" name
+          Anf.Type ty ->
+            error "TODO: instSelectionExpr_X86_64/IfThenElse/cond/Type" ty
           Anf.Var var ->
             (,pure ()) <$> lookupLocation var
           Anf.Literal lit -> do

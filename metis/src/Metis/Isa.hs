@@ -1,5 +1,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -70,7 +71,7 @@ deriving instance (Eq (Register isa)) => Eq (Memory isa)
 deriving instance (Show (Register isa)) => Show (Memory isa)
 
 newtype Symbol = Symbol {value :: Text}
-  deriving (Eq, Show)
+  deriving (Eq, Show, Hashable)
 
 class Call isa a where call :: a -> Instruction isa
 class Pop isa a where pop :: a -> Instruction isa

@@ -9,22 +9,23 @@ module Metis.Core (
 import Bound.Scope.Simple (Scope)
 import Data.Text (Text)
 import Data.Word (Word64)
+import Metis.Kind (Kind)
 import Metis.Literal (Literal)
 import qualified Metis.Literal as Literal
 import Metis.Type (Type)
 
-data Expr a
-  = Var a
+data Expr ty tm
+  = Var tm
   | Name Text
   | Literal Literal
-  | Add Type (Expr a) (Expr a)
-  | Subtract Type (Expr a) (Expr a)
-  | Let Type (Maybe Text) Type (Expr a) (Scope () Expr a)
-  | IfThenElse Type (Expr a) (Expr a) (Expr a)
-  | Call Type (Expr a) [Expr a]
+  | Add (Type ty) (Expr ty tm) (Expr ty tm)
+  | Subtract (Type ty) (Expr ty tm) (Expr ty tm)
+  | Let (Type ty) (Maybe Text) (Type ty) (Expr ty tm) (Scope () (Expr ty) tm)
+  | IfThenElse (Type ty) (Expr ty tm) (Expr ty tm) (Expr ty tm)
+  | Call (Type ty) (Expr ty tm) [Type ty] [Expr ty tm]
   deriving (Functor, Foldable, Traversable)
 
-typeOf :: (Text -> Type) -> (a -> Type) -> Expr a -> Type
+typeOf :: (Text -> Type ty) -> (tm -> Type ty) -> Expr ty tm -> Type ty
 typeOf nameTy varTy expr =
   case expr of
     Var var -> varTy var
@@ -34,11 +35,12 @@ typeOf nameTy varTy expr =
     Subtract ty _ _ -> ty
     Let ty _ _ _ _ -> ty
     IfThenElse ty _ _ _ -> ty
-    Call ty _ _ -> ty
+    Call ty _ _ _ -> ty
 
 data Function = Function
   { name :: Text
-  , args :: [(Text, Type)]
-  , retTy :: Type
-  , body :: Expr Word64
+  , tyArgs :: [(Text, Kind)]
+  , args :: [(Text, Type Word64)]
+  , retTy :: Type Word64
+  , body :: Expr Word64 Word64
   }

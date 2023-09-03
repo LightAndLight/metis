@@ -9,7 +9,7 @@ data Literal
   | Bool Bool
   deriving (Show, Eq)
 
-typeOf :: Literal -> Type
+typeOf :: Literal -> Type a
 typeOf lit =
   case lit of
     Uint64{} -> Type.Uint64

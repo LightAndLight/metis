@@ -23,7 +23,9 @@ module Metis.Anf (
   -- * ANF expression builder
   AnfBuilderT,
   runAnfBuilderT,
+  freshLabel,
   freshVar,
+  freshTyVar,
   emit,
   letS,
   letC,
@@ -41,6 +43,7 @@ import qualified Data.Maybe as Maybe
 import Data.Text (Text)
 import Data.Word (Word64)
 import qualified Metis.Core as Core
+import Metis.Kind (Kind)
 import Metis.Literal (Literal)
 import qualified Metis.Literal as Literal
 import Metis.Type (Type)
@@ -59,14 +62,16 @@ data Simple
   = Var Var
   | Name Text
   | Literal Literal
+  | Type (Type Var)
   deriving (Show, Eq)
 
-typeOf :: (Text -> Type) -> (Var -> Type) -> Simple -> Type
-typeOf nameTys varTys simple =
+typeOf :: (Var -> Kind) -> (Text -> Type ty) -> (Var -> Type ty) -> Simple -> Either Kind (Type ty)
+typeOf varKinds nameTys varTys simple =
   case simple of
-    Var var -> varTys var
-    Name name -> nameTys name
-    Literal lit -> Literal.typeOf lit
+    Var var -> Right $ varTys var
+    Name name -> Right $ nameTys name
+    Literal lit -> Right $ Literal.typeOf lit
+    Type ty -> Left $ Type.kindOf varKinds ty
 
 data Compound
   = Binop Binop Simple Simple
@@ -78,13 +83,15 @@ data Binop = Add | Subtract
 
 data ExprInfo = ExprInfo
   { labelArgs :: Var -> Var
-  , varTys :: Var -> Type
+  , varKinds :: Var -> Kind
+  , varTys :: Var -> Type Var
   }
 
 data Function = Function
   { name :: Text
-  , args :: [(Var, Type)]
-  , retTy :: Type
+  , tyArgs :: [(Var, Kind)]
+  , args :: [(Var, Type Var)]
+  , retTy :: Type Var
   , bodyInfo :: ExprInfo
   , body :: Expr
   }
@@ -93,7 +100,8 @@ data AnfBuilderState = AnfBuilderState
   { nextVar :: Word64
   , program :: Expr -> Expr
   , labelArgs :: HashMap Var Var
-  , varTys :: HashMap Var Type
+  , varKinds :: HashMap Var Kind
+  , varTys :: HashMap Var (Type Var)
   }
 
 newtype AnfBuilderT m a = AnfBuilderT {value :: StateT AnfBuilderState m a}
@@ -108,6 +116,7 @@ runAnfBuilderT ma = do
         { nextVar = 0
         , program = id
         , labelArgs = mempty
+        , varKinds = mempty
         , varTys = mempty
         }
   pure (s, a)
@@ -115,12 +124,29 @@ runAnfBuilderT ma = do
 newtype Var = MkVar {value :: Word64}
   deriving (Show, Eq, Hashable)
 
-freshVar :: (Monad m) => AnfBuilderT m Var
-freshVar =
+freshLabel :: (Monad m) => AnfBuilderT m Var
+freshLabel =
   AnfBuilderT $ do
     n <- gets (.nextVar)
+    let var = MkVar n
     modify (\s -> s{nextVar = n + 1})
-    pure $ MkVar n
+    pure var
+
+freshVar :: (Monad m) => Type Var -> AnfBuilderT m Var
+freshVar ty =
+  AnfBuilderT $ do
+    n <- gets (.nextVar)
+    let var = MkVar n
+    modify (\s -> s{nextVar = n + 1, varTys = HashMap.insert var ty s.varTys})
+    pure var
+
+freshTyVar :: (Monad m) => Kind -> AnfBuilderT m Var
+freshTyVar kind =
+  AnfBuilderT $ do
+    n <- gets (.nextVar)
+    let var = MkVar n
+    modify (\s -> s{nextVar = n + 1, varKinds = HashMap.insert var kind s.varKinds})
+    pure var
 
 emit :: (Monad m) => (Expr -> Expr) -> AnfBuilderT m ()
 emit f = AnfBuilderT $ modify (\s -> s{program = s.program . f})
@@ -128,21 +154,19 @@ emit f = AnfBuilderT $ modify (\s -> s{program = s.program . f})
 data VarInfo = VarInfo {size :: Word64}
   deriving (Show, Eq)
 
-typeVarInfo :: Type -> VarInfo
+typeVarInfo :: Type ty -> VarInfo
 typeVarInfo ty = VarInfo{size = Type.sizeOf ty}
 
-letS :: (Monad m) => Type -> Simple -> AnfBuilderT m Var
+letS :: (Monad m) => Type Var -> Simple -> AnfBuilderT m Var
 letS ty value = do
-  var <- freshVar
+  var <- freshVar ty
   emit $ LetS var (typeVarInfo ty) value
-  AnfBuilderT $ modify (\s -> (s :: AnfBuilderState){varTys = HashMap.insert var ty s.varTys})
   pure var
 
-letC :: (Monad m) => Type -> Compound -> AnfBuilderT m Var
+letC :: (Monad m) => Type Var -> Compound -> AnfBuilderT m Var
 letC ty value = do
-  var <- freshVar
+  var <- freshVar ty
   emit $ LetC var (typeVarInfo ty) value
-  AnfBuilderT $ modify (\s -> (s :: AnfBuilderState){varTys = HashMap.insert var ty s.varTys})
   pure var
 
 block :: (Monad m) => Var -> Var -> AnfBuilderT m ()
@@ -158,13 +182,17 @@ programOf ma =
     put s'{program = s.program}
     pure (s'.program, a)
 
-fromCore :: (a -> Var) -> Core.Expr a -> (ExprInfo, Expr)
-fromCore toVar expr =
+fromCore :: (ty -> Var) -> (tm -> Var) -> Core.Expr ty tm -> (ExprInfo, Expr)
+fromCore toTyVar toVar expr =
   ( ExprInfo
       { labelArgs = \label ->
           Maybe.fromMaybe
             (error $ show label <> " missing from label args map")
             (HashMap.lookup label s.labelArgs)
+      , varKinds = \var ->
+          Maybe.fromMaybe
+            (error $ show var <> " missing from variable kinds map")
+            (HashMap.lookup var s.varKinds)
       , varTys = \var ->
           Maybe.fromMaybe
             (error $ show var <> " missing from variable types map")
@@ -173,20 +201,25 @@ fromCore toVar expr =
   , s.program (Return simple)
   )
   where
-    (s, simple) = runIdentity . runAnfBuilderT $ fromCoreExpr toVar expr
+    (s, simple) = runIdentity . runAnfBuilderT $ fromCoreExpr toTyVar toVar expr
 
 fromFunction :: Core.Function -> Function
-fromFunction Core.Function{name, args, retTy, body} =
+fromFunction Core.Function{name, tyArgs, args, retTy, body} =
   Function
     { name
+    , tyArgs = tyArgs'
     , args = args'
-    , retTy
+    , retTy = retTy'
     , bodyInfo =
         ExprInfo
           { labelArgs = \label ->
               Maybe.fromMaybe
                 (error $ show label <> " missing from label args map")
                 (HashMap.lookup label labelArgs)
+          , varKinds = \var ->
+              Maybe.fromMaybe
+                (error $ show var <> " missing from variable kinds map")
+                (HashMap.lookup var varKinds)
           , varTys = \var ->
               Maybe.fromMaybe
                 (error $ show var <> " missing from variable types map")
@@ -195,14 +228,21 @@ fromFunction Core.Function{name, args, retTy, body} =
     , body = program (Return simple)
     }
   where
-    (AnfBuilderState{labelArgs, varTys, program}, (args', simple)) =
+    (AnfBuilderState{labelArgs, varKinds, varTys, program}, (tyArgs', args', retTy', simple)) =
       runIdentity . runAnfBuilderT $ do
-        vars <- traverse (const freshVar) args
-        body' <- fromCoreExpr (\index -> vars !! fromIntegral @Word64 @Int index) body
-        pure (zipWith (\var (_, argTy) -> (var, argTy)) vars args, body')
+        tyVars <- traverse (\(_, kind) -> freshTyVar kind) tyArgs
+        let renameTyVar index = tyVars !! fromIntegral @Word64 @Int index
+        args'' <- traverse (\(_, ty) -> let ty' = fmap renameTyVar ty in (,) <$> freshVar ty' <*> pure ty') args
+        body' <- fromCoreExpr renameTyVar (\index -> fst $ args'' !! fromIntegral @Word64 @Int index) body
+        pure
+          ( zipWith (\tyVar (_, kind) -> (tyVar, kind)) tyVars tyArgs
+          , args''
+          , fmap renameTyVar retTy
+          , body'
+          )
 
-fromCoreExpr :: (Monad m) => (a -> Var) -> Core.Expr a -> AnfBuilderT m Simple
-fromCoreExpr toVar expr =
+fromCoreExpr :: (Monad m) => (ty -> Var) -> (tm -> Var) -> Core.Expr ty tm -> AnfBuilderT m Simple
+fromCoreExpr toTyVar toVar expr =
   case expr of
     Core.Var var ->
       pure $ Var (toVar var)
@@ -211,35 +251,37 @@ fromCoreExpr toVar expr =
     Core.Literal lit ->
       pure $ Literal lit
     Core.Add ty a b -> do
-      a' <- fromCoreExpr toVar a
-      b' <- fromCoreExpr toVar b
-      Var <$> letC ty (Binop Add a' b')
+      a' <- fromCoreExpr toTyVar toVar a
+      b' <- fromCoreExpr toTyVar toVar b
+      Var <$> letC (fmap toTyVar ty) (Binop Add a' b')
     Core.Subtract ty a b -> do
-      a' <- fromCoreExpr toVar a
-      b' <- fromCoreExpr toVar b
-      Var <$> letC ty (Binop Subtract a' b')
+      a' <- fromCoreExpr toTyVar toVar a
+      b' <- fromCoreExpr toTyVar toVar b
+      Var <$> letC (fmap toTyVar ty) (Binop Subtract a' b')
     Core.Let _ _ valueTy value rest -> do
-      value' <- fromCoreExpr toVar value
+      value' <- fromCoreExpr toTyVar toVar value
       var <-
         case value' of
           Var var ->
             pure var
           Name{} ->
-            letS valueTy value'
+            letS (fmap toTyVar valueTy) value'
           Literal{} ->
-            letS valueTy value'
-      fromCoreExpr (unvar (\() -> var) toVar) (fromScope rest)
-    Core.IfThenElse _ cond then_ else_ -> do
-      cond' <- fromCoreExpr toVar cond
-      (then_', thenSimple) <- programOf $ fromCoreExpr toVar then_
-      (else_', elseSimple) <- programOf $ fromCoreExpr toVar else_
-      label <- freshVar
+            letS (fmap toTyVar valueTy) value'
+          Type{} ->
+            letS (fmap toTyVar valueTy) value'
+      fromCoreExpr toTyVar (unvar (\() -> var) toVar) (fromScope rest)
+    Core.IfThenElse ty cond then_ else_ -> do
+      cond' <- fromCoreExpr toTyVar toVar cond
+      (then_', thenSimple) <- programOf $ fromCoreExpr toTyVar toVar then_
+      (else_', elseSimple) <- programOf $ fromCoreExpr toTyVar toVar else_
+      label <- freshLabel
       emit $ IfThenElse cond' (then_' $ Jump label thenSimple) (else_' $ Jump label elseSimple)
 
-      arg <- freshVar
+      arg <- freshVar $ fmap toTyVar ty
       block label arg
       pure $ Var arg
-    Core.Call ty function args -> do
-      function' <- fromCoreExpr toVar function
-      args' <- traverse (fromCoreExpr toVar) args
-      Var <$> letC ty (Call function' args')
+    Core.Call ty function tyArgs args -> do
+      function' <- fromCoreExpr toTyVar toVar function
+      args' <- traverse (fromCoreExpr toTyVar toVar) args
+      Var <$> letC (fmap toTyVar ty) (Call function' $ fmap (Type . fmap toTyVar) tyArgs <> args')
