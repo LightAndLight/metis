@@ -22,12 +22,14 @@ module Metis.InstSelection (
   moveRegisterFunctionArguments,
 ) where
 
+import Bound.Scope.Simple (instantiate)
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.Reader (ReaderT, runReaderT)
 import Control.Monad.Reader.Class (MonadReader, asks)
 import Control.Monad.State.Class (MonadState, gets, modify)
 import Control.Monad.State.Strict (State, StateT, runState, runStateT)
-import Data.Foldable (foldl', for_, traverse_)
+import Data.Buildable (collectL')
+import Data.Foldable (for_, traverse_)
 import Data.Foldable.WithIndex (ifor_)
 import qualified Data.HashMap.Lazy as HashMap.Lazy
 import qualified Data.HashMap.Lazy as Lazy (HashMap)
@@ -411,47 +413,58 @@ data StackFunctionArgument isa = StackFunctionArgument
 
 setupFunctionArguments ::
   Seq (Register X86_64) ->
-  [Type Anf.Var] ->
-  [Value X86_64] ->
+  [(Value X86_64, Kind)] ->
+  [(Value X86_64, Type Anf.Var)] ->
   FunctionArguments X86_64
-setupFunctionArguments availableArgumentRegisters argTys argLocations =
+setupFunctionArguments availableArgumentRegisters typeArgs valueArgs =
   case Seq.viewl availableArgumentRegisters of
     register Seq.:< availableArgumentRegisters' ->
-      case (argTys, argLocations) of
-        ([], []) ->
-          mempty
-        (argTy : argTys', argLocation : argLocations') ->
-          ( case Type.callingConventionOf argTy of
-              Type.Register ->
-                FunctionArguments
-                  { registerFunctionArguments =
-                      [ RegisterFunctionArgument
-                          { size = Type.sizeOf argTy
-                          , src = argLocation
-                          , dest = register
-                          }
-                      ]
-                  , stackFunctionArguments = []
-                  }
-              Type.Composite{} -> error "TODO: types with composite calling conventions"
-          )
+      case typeArgs of
+        [] ->
+          case valueArgs of
+            [] ->
+              mempty
+            (argLocation, argTy) : valueArgs' ->
+              ( case Type.callingConventionOf argTy of
+                  Type.Register ->
+                    FunctionArguments
+                      { registerFunctionArguments =
+                          [ RegisterFunctionArgument
+                              { size = Type.sizeOf argTy
+                              , src = argLocation
+                              , dest = register
+                              }
+                          ]
+                      , stackFunctionArguments = []
+                      }
+                  Type.Composite{} -> error "TODO: types with composite calling conventions"
+              )
+                <> setupFunctionArguments
+                  availableArgumentRegisters'
+                  typeArgs
+                  valueArgs'
+        (typeArgValue, _typeArgKind) : typeArgs' ->
+          FunctionArguments
+            { registerFunctionArguments =
+                [ RegisterFunctionArgument
+                    { size = Type.pointerSize
+                    , src = typeArgValue
+                    , dest = register
+                    }
+                ]
+            , stackFunctionArguments = []
+            }
             <> setupFunctionArguments
               availableArgumentRegisters'
-              argTys'
-              argLocations'
-        _ ->
-          error $
-            "argument types and argument locations have different number of elements: "
-              <> show argTys
-              <> ", "
-              <> show argLocations
+              typeArgs'
+              valueArgs
     Seq.EmptyL ->
       setupStackFunctionArguments
         -- Assumes that 0(%rbp) in the callee's stack frame contains the return address, after which
         -- comes the stack arguments.
         (fromIntegral @Word64 @Int64 Type.pointerSize)
-        argTys
-        argLocations
+        typeArgs
+        valueArgs
 
 {-
 The function arguments require all available registers, so the remaining arguments must be passed
@@ -459,32 +472,37 @@ on the stack.
 -}
 setupStackFunctionArguments ::
   Int64 ->
-  [Type Anf.Var] ->
-  [Value X86_64] ->
+  [(Value X86_64, Kind)] ->
+  [(Value X86_64, Type Anf.Var)] ->
   FunctionArguments X86_64
-setupStackFunctionArguments offset argTys argLocations =
-  case (argTys, argLocations) of
-    ([], []) ->
-      mempty
-    (argTy : argTys', argLocation : argLocations') ->
-      ( case Type.callingConventionOf argTy of
-          Type.Register ->
-            FunctionArguments
-              { registerFunctionArguments = []
-              , stackFunctionArguments = [StackFunctionArgument{src = argLocation, dest = Mem{base = Rbp, offset}}]
-              }
-          Type.Composite{} -> error "TODO: types with composite calling conventions"
-      )
+setupStackFunctionArguments offset typeArgs valueArgs =
+  case typeArgs of
+    [] ->
+      case valueArgs of
+        [] ->
+          mempty
+        (argLocation, argTy) : valueArgs' ->
+          ( case Type.callingConventionOf argTy of
+              Type.Register ->
+                FunctionArguments
+                  { registerFunctionArguments = []
+                  , stackFunctionArguments = [StackFunctionArgument{src = argLocation, dest = Mem{base = Rbp, offset}}]
+                  }
+              Type.Composite{} -> error "TODO: types with composite calling conventions"
+          )
+            <> setupStackFunctionArguments
+              (offset + fromIntegral @Word64 @Int64 (Type.sizeOf argTy))
+              typeArgs
+              valueArgs'
+    (typeArgValue, _typeArgKind) : typeArgs' ->
+      FunctionArguments
+        { registerFunctionArguments = []
+        , stackFunctionArguments = [StackFunctionArgument{src = typeArgValue, dest = Mem{base = Rbp, offset}}]
+        }
         <> setupStackFunctionArguments
-          (offset + fromIntegral @Word64 @Int64 (Type.sizeOf argTy))
-          argTys'
-          argLocations'
-    _ ->
-      error $
-        "argument types and argument locations have different number of elements: "
-          <> show argTys
-          <> ", "
-          <> show argLocations
+          (offset + fromIntegral @Word64 @Int64 Type.pointerSize)
+          typeArgs'
+          valueArgs
 
 {-
 Problem:
@@ -633,28 +651,49 @@ moveRegisterFunctionArguments registerRemapping arguments = do
             mov Op2{src = dest, dest = Mem{base = Rbp, offset = tempOffset}}
       ]
 
-getRegistersUsedByFunction :: forall isa. (Isa isa) => Seq (Register isa) -> [Type Anf.Var] -> Type Anf.Var -> HashSet (Register isa)
-getRegistersUsedByFunction registerPool argTys retTy =
+getRegistersUsedByFunction ::
+  forall isa.
+  (Isa isa) =>
+  Seq (Register isa) ->
+  [Kind] ->
+  [Type Anf.Var] ->
+  Type Anf.Var ->
+  HashSet (Register isa)
+getRegistersUsedByFunction registerPool typeArgKinds argTys retTy =
   let
-    ((), (_, toSave)) = runState (traverse_ goType argTys) (registerPool, mempty)
-    ((), (_, toSave')) = runState (goType retTy) (registerPool, toSave)
+    ((), (_, toSave)) = flip runState (registerPool, mempty) $ do
+      traverse_ goKind typeArgKinds
+      traverse_ goType argTys
+    -- TODO: stack-returned outputs need an input register
+    ((), (_, toSave')) =
+      runState (goType retTy) (registerPool, toSave)
    in
     toSave'
   where
+    goKind :: Kind -> State (Seq (Register isa), HashSet (Register isa)) ()
+    goKind _kind =
+      -- Type arguments have "register" calling convention.
+      -- A type argument is a pointer to a type dictionary.
+      goCallingConventionRegister
+
     goType :: Type Anf.Var -> State (Seq (Register isa), HashSet (Register isa)) ()
     goType ty = goCallingConvention (Type.callingConventionOf ty)
 
     goCallingConvention :: Type.CallingConvention -> State (Seq (Register isa), HashSet (Register isa)) ()
     goCallingConvention cc =
       case cc of
-        Type.Register -> do
-          availableRegisters <- gets fst
-          case Seq.viewl availableRegisters of
-            Seq.EmptyL -> pure mempty
-            register Seq.:< availableRegisters' ->
-              modify $ \(_, toSave) -> (availableRegisters', HashSet.insert register toSave)
+        Type.Register ->
+          goCallingConventionRegister
         Type.Composite ccs ->
           traverse_ goCallingConvention ccs
+
+    goCallingConventionRegister :: State (Seq (Register isa), HashSet (Register isa)) ()
+    goCallingConventionRegister = do
+      availableRegisters <- gets fst
+      case Seq.viewl availableRegisters of
+        Seq.EmptyL -> pure mempty
+        register Seq.:< availableRegisters' ->
+          modify $ \(_, toSave) -> (availableRegisters', HashSet.insert register toSave)
 
 generateTypeDict :: (MonadAsm X86_64 m) => Symbol -> Type a -> m Symbol
 generateTypeDict name ty =
@@ -812,6 +851,44 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
                 args'
             Type.Composite{} -> error "TODO: composite stack function arguments"
 
+data ClassifiedArguments isa = ClassifiedArguments
+  { typeArgs :: [(Value isa, Kind)]
+  , args :: [(Value isa, Type Anf.Var)]
+  , retTy :: Type Anf.Var
+  }
+
+classifyArguments :: (Isa isa) => Type Anf.Var -> [(Anf.Simple, Value isa)] -> ClassifiedArguments isa
+classifyArguments ty args =
+  case ty of
+    Type.Forall tyVars body ->
+      let
+        (usedArgs, args') = splitAt (length tyVars) args
+        usedTypeArgs =
+          fmap
+            ( \(simple, _location) ->
+                case simple of
+                  Anf.Type tyArg -> tyArg
+                  arg -> error $ "expected type argument, got " <> show arg
+            )
+            usedArgs
+        result = classifyArguments (instantiate (\index -> usedTypeArgs !! fromIntegral @Word64 @Int index) body) args'
+       in
+        result{typeArgs = zipWith (\(_, location) (_, argTy) -> (location, argTy)) usedArgs tyVars <> result.typeArgs}
+    Type.Fn argTys retTy ->
+      if length argTys /= length args
+        then
+          error $
+            "incorrect number of arguments supplied to function. expected "
+              <> show (length argTys)
+              <> ", got "
+              <> show (length args)
+              <> "("
+              <> show args
+              <> ")"
+        else ClassifiedArguments{typeArgs = [], args = zipWith (\(_, location) argTy -> (location, argTy)) args argTys, retTy}
+    _ ->
+      ClassifiedArguments{typeArgs = [], args = [], retTy = ty}
+
 instSelectionExpr_X86_64 ::
   (MonadState (InstSelectionState X86_64) m, MonadReader (InstSelectionEnv X86_64) m, MonadLog m) =>
   HashMap Anf.Var Word64 ->
@@ -858,10 +935,10 @@ instSelectionExpr_X86_64 varSizes expr =
           nameTys <- asks (.nameTys)
           varTys <- asks (.varTys)
           case Anf.typeOf varKinds nameTys varTys function of
-            Right (Type.Forall tyVars body) ->
-              error "TODO: calling polymorphic functions" tyVars body
-            Right (Type.Fn argTys retTy) -> do
-              registersAvailableAtCall <- foldl' (flip HashSet.insert) mempty <$> gets (.available)
+            Right ty -> do
+              let ClassifiedArguments{typeArgs, args = valueArgs, retTy} = classifyArguments ty (zip args argLocations)
+
+              registersAvailableAtCall <- collectL' @(HashSet _) <$> gets (.available)
               registersKilledByCall <- do
                 liveness <- lookupLiveness var
                 HashSet.fromList
@@ -873,7 +950,12 @@ instSelectionExpr_X86_64 varSizes expr =
                           Stack{} -> pure Nothing
                     )
                     (HashSet.toList liveness.kills)
-              let registersUsedByFunction = getRegistersUsedByFunction (generalPurposeRegisters @X86_64) argTys retTy
+              let registersUsedByFunction =
+                    getRegistersUsedByFunction
+                      (generalPurposeRegisters @X86_64)
+                      (fmap snd typeArgs)
+                      (fmap snd valueArgs)
+                      retTy
 
               callerSavedRegisters <-
                 forMaybe (generalPurposeRegisters @X86_64) $ \register ->
@@ -891,8 +973,8 @@ instSelectionExpr_X86_64 varSizes expr =
               let functionArguments =
                     setupFunctionArguments
                       (generalPurposeRegisters @X86_64)
-                      argTys
-                      argLocations
+                      typeArgs
+                      valueArgs
 
               emit =<< moveRegisterFunctionArguments mempty functionArguments.registerFunctionArguments
 

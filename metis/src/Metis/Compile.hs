@@ -17,7 +17,7 @@ module Metis.Compile (
 
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Data.Buildable (ifromListL')
+import Data.Buildable (collectL')
 import Data.Foldable (for_)
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
@@ -153,7 +153,7 @@ compile buildDir definitions expr outPath = do
   let
     nameTysMap :: HashMap Text (Type a)
     nameTysMap =
-      ifromListL' $
+      collectL' @(HashMap _ _) $
         fmap
           ( \Core.Function{name, tyArgs, args, retTy} ->
               (name, Type.forall_ tyArgs (Type.Fn (fmap snd args) retTy))

@@ -9,9 +9,10 @@ module Test.CoreToAsm (spec) where
 
 import Bound.Scope.Simple (toScope)
 import Bound.Var (Var (..))
-import Data.Buildable (ifromListL')
+import Data.Buildable (collectL')
 import Data.CallStack (HasCallStack)
 import Data.Foldable (for_, traverse_)
+import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 import qualified Data.Maybe as Maybe
 import Data.Sequence (Seq)
@@ -57,7 +58,7 @@ testCase TestCase{title, definitions, expr, availableRegisters, expectedOutput} 
   it title . withSystemTempFile "metis-coretoasm-logs.txt" $ \tempFilePath tempFileHandle -> saveLogsOnFailure tempFilePath $ do
     asm <- fmap (Text.Lazy.Builder.toLazyText . printAsm printInstruction_X86_64) . runAsmBuilderT . handleLogging tempFileHandle $ do
       let nameTysMap =
-            ifromListL' $
+            collectL' @(HashMap _ _) $
               fmap (\Function{name, tyArgs, args, retTy} -> (name, Type.forall_ tyArgs $ Type.Fn (fmap snd args) retTy)) definitions
       let nameTys name = Maybe.fromMaybe (error $ show name <> " missing from name types map") $ HashMap.lookup name nameTysMap
 

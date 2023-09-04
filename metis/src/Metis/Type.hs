@@ -14,8 +14,10 @@ module Metis.Type (
   kindOf,
 ) where
 
+import Bound.Class ((>>>=))
 import Bound.Scope.Simple (Scope, toScope)
 import Bound.Var (Var (..))
+import qualified Control.Monad
 import Data.Deriving (deriveEq1, deriveShow1)
 import Data.Functor.Classes (eq1, showsPrec1)
 import Data.Hashable (Hashable, hashWithSalt)
@@ -41,6 +43,17 @@ instance (Eq a) => Eq (Type a) where (==) = eq1
 instance (Show a) => Show (Type a) where showsPrec = showsPrec1
 instance Hashable1 Type
 instance (Hashable a) => Hashable (Type a) where hashWithSalt = hashWithSalt1
+
+instance Applicative Type where
+  pure = Var
+  (<*>) = Control.Monad.ap
+
+instance Monad Type where
+  Var a >>= f = f a
+  Uint64 >>= _ = Uint64
+  Bool >>= _ = Bool
+  Fn args ret >>= f = Fn (fmap (>>= f) args) (ret >>= f)
+  Forall args body >>= f = Forall args (body >>>= f)
 
 pointerSize :: Word64
 pointerSize = 8 -- assumes 64 bit target architecture
