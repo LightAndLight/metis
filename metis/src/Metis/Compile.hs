@@ -31,7 +31,7 @@ import Data.Void (Void, absurd)
 import Data.Word (Word64)
 import qualified Metis.Anf as Anf
 import Metis.Asm (Statement (..))
-import qualified Metis.Asm as Asm
+import qualified Metis.Asm as Asm (BlockAttribute (..), printAsm)
 import qualified Metis.Asm.Builder as Asm (runAsmBuilderT)
 import qualified Metis.Asm.Class as Asm (block, string)
 import Metis.Codegen (printInstruction_X86_64)
@@ -198,6 +198,9 @@ compile buildDir definitions expr outPath = do
             ]
         )
     pure ()
+
+  -- TODO: this was helpful for debugging some bad ASM. Perhaps it should be a compile option?
+  -- liftIO $ Text.Lazy.IO.writeFile (buildDir </> programName <.> "s") (Builder.toLazyText asm)
 
   let objectFile = buildDir </> programName <.> "o"
   assembleResult <- assemble objectFile asm

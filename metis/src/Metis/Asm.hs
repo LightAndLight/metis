@@ -13,6 +13,7 @@ module Metis.Asm (
   Statement (..),
   Directive (..),
   quad,
+  string,
   Expr (..),
   ToExpr (..),
   printAsm,
@@ -29,7 +30,7 @@ data Asm isa = Asm
   , text :: [Block isa]
   }
 
-data DataEntry = DataString {label :: Text, content :: Text}
+data DataEntry = DataEntry {label :: Text, content :: [Directive]}
 
 data Block isa = Block
   { label :: Text
@@ -49,11 +50,13 @@ deriving instance (Show (Instruction isa)) => Show (Statement isa)
 
 data Directive
   = Quad Expr
+  | String Expr
   deriving (Eq, Show)
 
 data Expr
   = Word64 Word64
   | Symbol Symbol
+  | ExprString Text
   deriving (Eq, Show)
 
 class ToExpr a where
@@ -65,8 +68,14 @@ instance ToExpr Word64 where
 instance ToExpr Symbol where
   toExpr = Metis.Asm.Symbol
 
+instance ToExpr Text where
+  toExpr = ExprString
+
 quad :: (ToExpr a) => a -> Directive
 quad = Quad . toExpr
+
+string :: (ToExpr a) => a -> Directive
+string = String . toExpr
 
 printAsm :: (Instruction isa -> Builder) -> Asm isa -> Builder
 printAsm printInstruction asm =
@@ -76,11 +85,10 @@ printAsm printInstruction asm =
         else
           [".data"]
             <> fmap
-              ( \DataString{label, content} ->
+              ( \DataEntry{label, content} ->
                   Builder.fromText label
-                    <> ": "
-                    <> ".string "
-                    <> Builder.fromString (show content)
+                    <> ":\n"
+                    <> foldMap ((<> "\n") . printDirective) content
               )
               asm.data_
     )
@@ -104,6 +112,7 @@ printDirective directive =
   "."
     <> case directive of
       Quad e -> "quad " <> printExpr e
+      String e -> "string " <> printExpr e
 
 printExpr :: Expr -> Builder
 printExpr e =
@@ -112,3 +121,5 @@ printExpr e =
       Builder.fromString (show w)
     Metis.Asm.Symbol s ->
       Builder.fromText s.value
+    ExprString s ->
+      Builder.fromString (show s)
