@@ -1,26 +1,28 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Data.Buildable (
   Buildable (..),
-  fromListR,
-  fromListL,
-  fromListL',
-  IndexedBuildable (..),
-  ifromListR,
-  ifromListL,
-  ifromListL',
+  collectR,
+  collectL,
+  collectL',
 ) where
 
 import Control.Monad.ST (ST, runST)
 import Data.Foldable (foldl')
 import qualified Data.HashMap.Lazy as HashMap
 import Data.HashMap.Strict (HashMap)
+import Data.HashSet (HashSet)
+import qualified Data.HashSet as HashSet
 import Data.Hashable (Hashable)
+import Data.Kind (Type)
 import Data.Monoid (Endo (..))
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
@@ -33,26 +35,34 @@ import GHC.Int (Int (..))
 
 {- | Laws:
 
-@foldr cons nil (buildr f) = f cons nil@
-@foldl snoc nil (buildl f) = f snoc nil@
-@foldMap into (buildMap f) = f into@
+Given @Foldable f@ and @Buildable (f a), Item (f a) ~ a@
+
+@foldr \@f cons nil (buildr f) = f cons nil@
+@foldl \@f snoc nil (buildl f) = f snoc nil@
+@foldMap \@f into (buildMap f) = f into@
 -}
-class Buildable f where
-  buildr :: (forall r. (a -> r -> r) -> r -> r) -> f a
+class Buildable b where
+  type Item b :: Type
+
+  buildr :: (forall r. (Item b -> r -> r) -> r -> r) -> b
   buildr f = buildMap (\into -> f (\a rest -> (into a <>) . rest) id mempty)
 
-  buildl :: (forall r. (r -> a -> r) -> r -> r) -> f a
+  buildl :: (forall r. (r -> Item b -> r) -> r -> r) -> b
   buildl f = buildMap (\into -> f (\acc a -> acc . (into a <>)) id mempty)
 
-  buildMap :: (forall m. (Monoid m) => (a -> m) -> m) -> f a
+  buildMap :: (forall m. (Monoid m) => (Item b -> m) -> m) -> b
   buildMap f = buildr (\cons nil -> appEndo (f (Endo . cons)) nil)
 
-instance Buildable [] where
+instance Buildable [a] where
+  type Item [a] = a
+
   buildr f = f (:) []
   buildl f = f (\as a -> as . (:) a) id []
   buildMap f = f pure
 
-instance Buildable Seq where
+instance Buildable (Seq a) where
+  type Item (Seq a) = a
+
   buildr f = f (Seq.<|) Seq.empty
   buildl f = f (Seq.|>) Seq.empty
   buildMap f = f Seq.singleton
@@ -70,7 +80,9 @@ instance Monoid (VectorBuilder a) where
   {-# INLINE mempty #-}
   mempty = VectorBuilder 0# (\_ _ -> pure ())
 
-instance Buildable Vector where
+instance Buildable (Vector a) where
+  type Item (Vector a) = a
+
   buildMap f = toVector (f into)
    where
     {-# INLINE into #-}
@@ -85,40 +97,25 @@ instance Buildable Vector where
         make v 0#
         Vector.unsafeFreeze v
 
-fromListR :: (Buildable f) => [a] -> f a
-fromListR as = buildr (\cons nil -> foldr cons nil as)
+instance (Hashable a) => Buildable (HashSet a) where
+  type Item (HashSet a) = a
 
-fromListL :: (Buildable f) => [a] -> f a
-fromListL as = buildl (\snoc nil -> foldl snoc nil as)
+  buildr f = f HashSet.insert HashSet.empty
+  buildl f = f (flip HashSet.insert) HashSet.empty
+  buildMap f = f HashSet.singleton
 
-fromListL' :: (Buildable f) => [a] -> f a
-fromListL' as = buildl (\snoc nil -> foldl' snoc nil as)
+instance (Hashable k) => Buildable (HashMap k v) where
+  type Item (HashMap k v) = (k, v)
 
-{- | Laws:
+  buildr f = f (uncurry HashMap.insert) HashMap.empty
+  buildl f = f (\acc (k, v) -> HashMap.insert k v acc) HashMap.empty
+  buildMap f = f (uncurry HashMap.singleton)
 
-@ifoldr cons nil (ibuildr f) = f cons nil@
-@ifoldl snoc nil (ibuildl f) = f snoc nil@
-@ifoldMap into (ibuildMap f) = f into@
--}
-class IndexedBuildable i f | f -> i where
-  ibuildr :: (forall r. (i -> a -> r -> r) -> r -> r) -> f a
-  ibuildr f = ibuildMap (\into -> f (\i a rest -> (into i a <>) . rest) id mempty)
+collectR :: forall b f a. (Foldable f, Buildable b, Item b ~ a) => f a -> b
+collectR as = buildr (\cons nil -> foldr cons nil as)
 
-  ibuildl :: (forall r. (r -> i -> a -> r) -> r -> r) -> f a
-  ibuildl f = ibuildMap (\into -> f (\acc i a -> acc . (into i a <>)) id mempty)
+collectL :: forall b f a. (Foldable f, Buildable b, Item b ~ a) => f a -> b
+collectL as = buildl (\snoc nil -> foldl snoc nil as)
 
-  ibuildMap :: (forall m. (Monoid m) => (i -> a -> m) -> m) -> f a
-  ibuildMap f = ibuildr (\cons nil -> appEndo (f (\i -> Endo . cons i)) nil)
-
-instance (Hashable k) => IndexedBuildable k (HashMap k) where
-  ibuildr f = f HashMap.insert mempty
-  ibuildl f = f (\rest k v -> HashMap.insert k v rest) mempty
-
-ifromListR :: (IndexedBuildable i f) => [(i, a)] -> f a
-ifromListR as = ibuildr (\cons nil -> foldr (uncurry cons) nil as)
-
-ifromListL :: (IndexedBuildable i f) => [(i, a)] -> f a
-ifromListL as = ibuildl (\snoc nil -> foldl (uncurry . snoc) nil as)
-
-ifromListL' :: (IndexedBuildable i f) => [(i, a)] -> f a
-ifromListL' as = ibuildl (\snoc nil -> foldl' (uncurry . snoc) nil as)
+collectL' :: forall b f a. (Foldable f, Buildable b, Item b ~ a) => f a -> b
+collectL' as = buildl (\snoc nil -> foldl' snoc nil as)
