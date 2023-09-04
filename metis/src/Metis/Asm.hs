@@ -12,6 +12,9 @@ module Metis.Asm (
   BlockAttribute (..),
   Statement (..),
   Directive (..),
+  quad,
+  Expr (..),
+  ToExpr (..),
   printAsm,
 ) where
 
@@ -19,7 +22,7 @@ import Data.Text (Text)
 import Data.Text.Lazy.Builder (Builder)
 import qualified Data.Text.Lazy.Builder as Builder
 import Data.Word (Word64)
-import Metis.Isa (Instruction)
+import Metis.Isa (Instruction, Symbol (..))
 
 data Asm isa = Asm
   { data_ :: [DataEntry]
@@ -45,8 +48,25 @@ deriving instance (Eq (Instruction isa)) => Eq (Statement isa)
 deriving instance (Show (Instruction isa)) => Show (Statement isa)
 
 data Directive
-  = Quad Word64
+  = Quad Expr
   deriving (Eq, Show)
+
+data Expr
+  = Word64 Word64
+  | Symbol Symbol
+  deriving (Eq, Show)
+
+class ToExpr a where
+  toExpr :: a -> Expr
+
+instance ToExpr Word64 where
+  toExpr = Word64
+
+instance ToExpr Symbol where
+  toExpr = Metis.Asm.Symbol
+
+quad :: (ToExpr a) => a -> Directive
+quad = Quad . toExpr
 
 printAsm :: (Instruction isa -> Builder) -> Asm isa -> Builder
 printAsm printInstruction asm =
@@ -83,4 +103,12 @@ printDirective :: Directive -> Builder
 printDirective directive =
   "."
     <> case directive of
-      Quad q -> "quad " <> Builder.fromString (show q)
+      Quad e -> "quad " <> printExpr e
+
+printExpr :: Expr -> Builder
+printExpr e =
+  case e of
+    Word64 w ->
+      Builder.fromString (show w)
+    Metis.Asm.Symbol s ->
+      Builder.fromText s.value

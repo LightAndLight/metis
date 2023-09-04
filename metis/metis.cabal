@@ -95,6 +95,7 @@ test-suite metis-test
         containers,
         directory,
         filepath,
+        foldable-buildable,
         hspec,
         metis,
         mtl,

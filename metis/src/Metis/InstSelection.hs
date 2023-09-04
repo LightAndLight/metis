@@ -44,7 +44,8 @@ import qualified Data.Text as Text
 import Data.Word (Word64)
 import GHC.Stack (HasCallStack)
 import qualified Metis.Anf as Anf
-import Metis.Asm (Block (..), BlockAttribute, Directive (..), Statement (..))
+import Metis.Asm (Block (..), BlockAttribute, Statement (..))
+import qualified Metis.Asm as Asm (quad)
 import Metis.Asm.Class (MonadAsm)
 import qualified Metis.Asm.Class as Asm
 import Metis.Isa (
@@ -67,7 +68,7 @@ import Metis.Isa (
   ret,
   sub,
  )
-import Metis.Isa.X86_64 (Register (..), X86_64)
+import Metis.Isa.X86_64 (Register (..), X86_64, movb, movzbq)
 import Metis.Kind (Kind)
 import Metis.Literal (Literal)
 import qualified Metis.Literal as Literal
@@ -156,13 +157,6 @@ emit ::
   m ()
 emit instructions =
   modify (\s -> s{currentBlockStatements = s.currentBlockStatements <> fmap Instruction instructions})
-
-dir ::
-  (MonadState (InstSelectionState isa) m) =>
-  Directive ->
-  m ()
-dir directive =
-  modify (\s -> s{currentBlockStatements = s.currentBlockStatements <> [Directive directive]})
 
 declareLabel ::
   (MonadState (InstSelectionState isa) m) =>
@@ -280,7 +274,7 @@ instSelection_X86_64 nameTys available exprInfo expr liveness blockName blockAtt
       exprInfo
       (initialInstSelectionState available liveness blockName blockAttributes)
       (instSelectionExpr_X86_64 mempty expr)
-  _ s.typeDicts
+  ifor_ s.typeDicts generateTypeDict
   traverse_ (\Block{label, attributes, statements} -> Asm.block label attributes statements) s.previousBlocks
   _ <- Asm.block s.currentBlockName s.currentBlockAttributes s.currentBlockStatements
   pure a
@@ -316,6 +310,8 @@ typeDict ty = do
           "type_Bool"
         Type.Fn{} ->
           "type_Fn"
+        Type.Forall{} ->
+          "type_Forall"
 
 instSelectionType_X86_64 ::
   (MonadState (InstSelectionState X86_64) m, MonadLog m) =>
@@ -330,6 +326,8 @@ instSelectionType_X86_64 ty = do
     Type.Bool ->
       Address <$> typeDict ty
     Type.Fn{} ->
+      Address <$> typeDict ty
+    Type.Forall{} ->
       Address <$> typeDict ty
 
 instSelectionSimple_X86_64 ::
@@ -658,6 +656,69 @@ getRegistersUsedByFunction registerPool argTys retTy =
         Type.Composite ccs ->
           traverse_ goCallingConvention ccs
 
+generateTypeDict :: (MonadAsm X86_64 m) => Symbol -> Type a -> m Symbol
+generateTypeDict name ty =
+  case ty of
+    Type.Var{} ->
+      error "impossible: generating type dictionary for variable"
+    Type.Uint64 -> do
+      copy <-
+        -- Type_Uint64_copy(self : *Type, from : *Uint64, to : *Uint64)
+        Asm.block "Type_Uint64_copy" [] . fmap Instruction $
+          [ mov Op2{src = Mem{base = Rbx, offset = 0}, dest = Rdx}
+          , mov Op2{dest = Rdx, src = Mem{base = Rcx, offset = 0}}
+          , pop Rbp
+          , ret ()
+          ]
+      Asm.block
+        name.value
+        []
+        [ Directive $ Asm.quad (8 :: Word64)
+        , Directive $ Asm.quad copy
+        ]
+    Type.Bool -> do
+      copy <-
+        Asm.block "Type_Bool_copy" [] . fmap Instruction $
+          [ movzbq Op2{src = Mem{base = Rbx, offset = 0}, dest = Rdx}
+          , movb Op2{src = Dl, dest = Mem{base = Rcx, offset = 0}}
+          , pop Rbp
+          , ret ()
+          ]
+      Asm.block
+        name.value
+        []
+        [ Directive $ Asm.quad (1 :: Word64)
+        , Directive $ Asm.quad copy
+        ]
+    Type.Fn{} -> do
+      copy <-
+        Asm.block "Type_Fn_copy" [] . fmap Instruction $
+          [ mov Op2{src = Mem{base = Rbx, offset = 0}, dest = Rdx}
+          , mov Op2{dest = Rdx, src = Mem{base = Rcx, offset = 0}}
+          , pop Rbp
+          , ret ()
+          ]
+      Asm.block
+        name.value
+        []
+        [ Directive $ Asm.quad (8 :: Word64)
+        , Directive $ Asm.quad copy
+        ]
+    Type.Forall{} -> do
+      copy <-
+        Asm.block "Type_Forall_copy" [] . fmap Instruction $
+          [ mov Op2{src = Mem{base = Rbx, offset = 0}, dest = Rdx}
+          , mov Op2{dest = Rdx, src = Mem{base = Rcx, offset = 0}}
+          , pop Rbp
+          , ret ()
+          ]
+      Asm.block
+        name.value
+        []
+        [ Directive $ Asm.quad (8 :: Word64)
+        , Directive $ Asm.quad copy
+        ]
+
 instSelectionFunction_X86_64 ::
   (MonadAsm X86_64 m, MonadLog m, MonadFix m) =>
   (Text -> Type Anf.Var) ->
@@ -669,6 +730,7 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
   let initial = initialInstSelectionState initialAvailable liveness function.name []
   rec let localsSize = fromIntegral @Int64 @Word64 (-s'.nextStackOffset)
       ((), s') <- runInstSelectionT nameTys function.bodyInfo initial $ do
+        -- TODO: set up type arguments
         stackArgumentsSize <- setupArguments function.args
         emit [sub Op2{dest = Rsp, src = imm localsSize} | localsSize > 0]
         -- TODO: something for values that are returned via stack
@@ -693,18 +755,7 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
             <> [add Op2{dest = Rsp, src = imm stackArgumentsSize} | stackArgumentsSize > 0]
             <> [ret ()]
 
-  ifor_ s'.typeDicts $ \name ty ->
-    Asm.block name.value [] $
-      case ty of
-        Type.Var{} -> error "impossible: generating type dictionary for variable"
-        Type.Uint64 ->
-          [ Directive $ Quad 8
-          , _
-          ]
-        Type.Bool ->
-          [ Directive $ Quad 1
-          , _
-          ]
+  ifor_ s'.typeDicts generateTypeDict
 
   traverse_
     (\Block{label, attributes, statements} -> Asm.block label attributes statements)

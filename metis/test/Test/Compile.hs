@@ -95,6 +95,7 @@ spec =
           definitions =
             [ Core.Function
                 { name = "f"
+                , tyArgs = []
                 , args = [("x", Type.Uint64), ("y", Type.Uint64)]
                 , retTy = Type.Uint64
                 , body =
@@ -107,7 +108,7 @@ spec =
           expr =
             Core.Let Type.Uint64 (Just "x") Type.Uint64 (Core.Literal $ Literal.Uint64 1) . toScope $
               Core.Let Type.Uint64 (Just "y") Type.Uint64 (Core.Literal $ Literal.Uint64 2) . toScope $
-                Core.Add Type.Uint64 (Core.Var . F $ B ()) (Core.Call Type.Uint64 (Core.Name "f") [Core.Var . F $ B (), Core.Var $ B ()])
+                Core.Add Type.Uint64 (Core.Var . F $ B ()) (Core.Call Type.Uint64 (Core.Name "f") [] [Core.Var . F $ B (), Core.Var $ B ()])
         let outPath = tempDir </> "program"
 
         compile tempDir definitions expr outPath

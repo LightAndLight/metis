@@ -88,6 +88,8 @@ printInstruction_X86_64 inst =
     printInst2 inst2 =
       case inst2 of
         Mov -> "mov"
+        Movzbq -> "movzbq"
+        Movb -> "movb"
         Add -> "add"
         Sub -> "sub"
         Xor -> "xor"

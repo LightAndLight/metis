@@ -19,6 +19,7 @@ import Control.Monad.Fix (MonadFix)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Buildable (ifromListL')
 import Data.Foldable (for_)
+import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 import qualified Data.Maybe as Maybe
 import Data.Text (Text)
@@ -29,6 +30,7 @@ import qualified Data.Text.Lazy.IO as Text.Lazy.IO
 import Data.Void (Void, absurd)
 import Data.Word (Word64)
 import qualified Metis.Anf as Anf
+import Metis.Asm (Statement (..))
 import qualified Metis.Asm as Asm
 import qualified Metis.Asm.Builder as Asm (runAsmBuilderT)
 import qualified Metis.Asm.Class as Asm (block, string)
@@ -39,6 +41,7 @@ import Metis.Isa (Memory (..), Op2 (..), Symbol (..), call, generalPurposeRegist
 import Metis.Isa.X86_64 (Register (..), X86_64)
 import qualified Metis.Liveness as Liveness
 import Metis.Log (noLogging)
+import Metis.Type (Type)
 import qualified Metis.Type as Type
 import qualified System.Directory as Directory
 import qualified System.Environment
@@ -141,14 +144,24 @@ link inFile outFile = do
     NoStdin
     IgnoreStdout
 
-compile :: (MonadFix m, MonadIO m) => FilePath -> [Core.Function] -> Core.Expr Void -> FilePath -> m ()
+compile :: (MonadFix m, MonadIO m) => FilePath -> [Core.Function] -> Core.Expr Void Void -> FilePath -> m ()
 compile buildDir definitions expr outPath = do
   liftIO $ Directory.createDirectoryIfMissing True buildDir
 
   let programName = FilePath.takeBaseName outPath
 
-  let nameTysMap = ifromListL' $ fmap (\Core.Function{name, args, retTy} -> (name, Type.Fn (fmap snd args) retTy)) definitions
-  let nameTys name = Maybe.fromMaybe (error $ show name <> " missing from name types map") $ HashMap.lookup name nameTysMap
+  let
+    nameTysMap :: HashMap Text (Type a)
+    nameTysMap =
+      ifromListL' $
+        fmap
+          ( \Core.Function{name, tyArgs, args, retTy} ->
+              (name, Type.forall_ tyArgs (Type.Fn (fmap snd args) retTy))
+          )
+          definitions
+  let
+    nameTys :: Text -> Type a
+    nameTys name = Maybe.fromMaybe (error $ show name <> " missing from name types map") $ HashMap.lookup name nameTysMap
   let availableRegisters = generalPurposeRegisters @X86_64
   asm <- fmap (Asm.printAsm printInstruction_X86_64) . Asm.runAsmBuilderT . noLogging $ do
     for_ definitions $ \function -> do
@@ -156,7 +169,7 @@ compile buildDir definitions expr outPath = do
       let liveness = Liveness.liveness function'.body
       instSelectionFunction_X86_64 nameTys availableRegisters liveness function'
     resultValue <- do
-      let (anfInfo, anf) = Anf.fromCore absurd expr
+      let (anfInfo, anf) = Anf.fromCore absurd absurd expr
       let liveness = Liveness.liveness anf
       instSelection_X86_64
         nameTys
@@ -171,16 +184,19 @@ compile buildDir definitions expr outPath = do
       Asm.block
         "print_and_exit"
         []
-        [ lea Op2{src = formatString, dest = Rdi}
-        , case resultValue of
-            ValueAt (Register register) -> mov Op2{src = register, dest = Rsi}
-            ValueAt (Stack offset) -> mov Op2{src = Mem{base = Rbp, offset}, dest = Rsi}
-            Address symbol -> mov Op2{src = imm symbol, dest = Rsi}
-        , xor Op2{src = Rax, dest = Rax}
-        , call (Symbol "printf")
-        , mov Op2{src = imm (0 :: Word64), dest = Rdi}
-        , call (Symbol "exit")
-        ]
+        ( fmap
+            Instruction
+            [ lea Op2{src = formatString, dest = Rdi}
+            , case resultValue of
+                ValueAt (Register register) -> mov Op2{src = register, dest = Rsi}
+                ValueAt (Stack offset) -> mov Op2{src = Mem{base = Rbp, offset}, dest = Rsi}
+                Address symbol -> mov Op2{src = imm symbol, dest = Rsi}
+            , xor Op2{src = Rax, dest = Rax}
+            , call (Symbol "printf")
+            , mov Op2{src = imm (0 :: Word64), dest = Rdi}
+            , call (Symbol "exit")
+            ]
+        )
     pure ()
 
   let objectFile = buildDir </> programName <.> "o"

@@ -1,4 +1,11 @@
+{-# LANGUAGE DeriveGeneric #-}
+
 module Metis.Kind (Kind (..)) where
 
-data Kind = Type | Arrow Kind Kind
-  deriving (Eq, Show)
+import Data.Hashable (Hashable)
+import GHC.Generics (Generic)
+
+data Kind = Type
+  deriving (Eq, Show, Generic)
+
+instance Hashable Kind

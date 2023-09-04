@@ -5,11 +5,8 @@
 ## Contents
 
 * [Types](#types)
-  * [Examples](#examples)
 * [Type constructors](#type-constructors)
-  * [Examples](#examples-1)
 * [Type parameters](#type-parameters)
-  * [Examples](#examples-2)
 * [Prior art](#prior-art)
 
 ## Types
@@ -27,6 +24,7 @@ void Type_copy(const Type* self, void* from, void* to) {
 }
 ```
 
+<!-- omit in toc -->
 ### Examples
 
 <!-- omit in toc -->
@@ -72,6 +70,7 @@ void* TyCtor_apply(const TyCtor* self, const Type* arg, void* result) {
 }
 ```
 
+<!-- omit in toc -->
 ### Examples
 
 <!-- omit in toc -->
@@ -207,6 +206,7 @@ void Type_FPair_create(const TyCtor* f, const TyCtor* g, const Type* a, Type_FPa
 
 ## Type parameters
 
+<!-- omit in toc -->
 ### Examples
 
 <!-- omit in toc -->

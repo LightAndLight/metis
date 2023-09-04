@@ -31,7 +31,7 @@ import Metis.Isa.X86_64 (Register (..), X86_64)
 import qualified Metis.Literal as Literal
 import qualified Metis.Liveness as Liveness
 import Metis.Log (handleLogging)
-import qualified Metis.Type as Type (Type (..))
+import qualified Metis.Type as Type (Type (..), forall_)
 import System.Exit (ExitCode (..))
 import System.IO (hClose)
 import System.IO.Temp (withSystemTempFile)
@@ -45,7 +45,7 @@ data TestCase where
     (HasCallStack) =>
     { title :: String
     , definitions :: [Function]
-    , expr :: Expr Void
+    , expr :: Expr Void Void
     , availableRegisters :: Seq (Register X86_64)
     , expectedOutput :: [Builder]
     } ->
@@ -57,7 +57,7 @@ testCase TestCase{title, definitions, expr, availableRegisters, expectedOutput} 
     asm <- fmap (Text.Lazy.Builder.toLazyText . printAsm printInstruction_X86_64) . runAsmBuilderT . handleLogging tempFileHandle $ do
       let nameTysMap =
             ifromListL' $
-              fmap (\Function{name, args, retTy} -> (name, Type.Fn (fmap snd args) retTy)) definitions
+              fmap (\Function{name, tyArgs, args, retTy} -> (name, Type.forall_ tyArgs $ Type.Fn (fmap snd args) retTy)) definitions
       let nameTys name = Maybe.fromMaybe undefined $ HashMap.lookup name nameTysMap
 
       for_ definitions $ \function -> do
@@ -66,7 +66,7 @@ testCase TestCase{title, definitions, expr, availableRegisters, expectedOutput} 
         instSelectionFunction_X86_64 nameTys availableRegisters liveness function'
 
       _ <- do
-        let (anfInfo, anf) = Anf.fromCore absurd expr
+        let (anfInfo, anf) = Anf.fromCore absurd absurd expr
         let liveness = Liveness.liveness anf
         instSelection_X86_64
           nameTys
@@ -303,6 +303,7 @@ spec =
         , definitions =
             [ Function
                 { name = "f"
+                , tyArgs = []
                 , args = [("x", Type.Uint64), ("y", Type.Uint64)]
                 , retTy = Type.Uint64
                 , body =
@@ -315,7 +316,7 @@ spec =
         , expr =
             Let Type.Uint64 (Just "x") Type.Uint64 (Literal $ Literal.Uint64 1) . toScope $
               Let Type.Uint64 (Just "y") Type.Uint64 (Literal $ Literal.Uint64 2) . toScope $
-                Add Type.Uint64 (Literal $ Literal.Uint64 3) (Call Type.Uint64 (Name "f") [Var . F $ B (), Var $ B ()])
+                Add Type.Uint64 (Literal $ Literal.Uint64 3) (Call Type.Uint64 (Name "f") [] [Var . F $ B (), Var $ B ()])
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
             [ ".text"
@@ -348,6 +349,7 @@ spec =
         , definitions =
             [ Function
                 { name = "f"
+                , tyArgs = []
                 , args = [("x", Type.Uint64), ("y", Type.Uint64)]
                 , retTy = Type.Uint64
                 , body =
@@ -360,7 +362,7 @@ spec =
         , expr =
             Let Type.Uint64 (Just "x") Type.Uint64 (Literal $ Literal.Uint64 1) . toScope $
               Let Type.Uint64 (Just "y") Type.Uint64 (Literal $ Literal.Uint64 2) . toScope $
-                Add Type.Uint64 (Var . F $ B ()) (Call Type.Uint64 (Name "f") [Var . F $ B (), Var $ B ()])
+                Add Type.Uint64 (Var . F $ B ()) (Call Type.Uint64 (Name "f") [] [Var . F $ B (), Var $ B ()])
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
             [ ".text"

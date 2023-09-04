@@ -94,11 +94,11 @@ spec =
                      ]
     describe "instSelection_X86_64" $ do
       let
-        shouldCompileTo :: (HasCallStack) => Core.Expr Void -> [Lazy.Text] -> IO ()
+        shouldCompileTo :: (HasCallStack) => Core.Expr Void Void -> [Lazy.Text] -> IO ()
         shouldCompileTo expr expectedOutput =
           withSystemTempFile "metis-instruction-selection-logs.txt" $ \tempFilePath tempFileHandle ->
             saveLogsOnFailure tempFilePath $ do
-              let (anfInfo, anf) = Anf.fromCore absurd expr
+              let (anfInfo, anf) = Anf.fromCore absurd absurd expr
               let liveness = Liveness.liveness anf
               let nameTys = \case
                     "f" -> Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64
@@ -115,7 +115,7 @@ spec =
       it "f : Fn (Uint64, Uint64) Uint64 |- let x = 1; let y = 2; f(x, y)" $
         ( Core.Let Type.Uint64 (Just "x") Type.Uint64 (Core.Literal $ Literal.Uint64 1) . toScope $
             Core.Let Type.Uint64 (Just "y") Type.Uint64 (Core.Literal $ Literal.Uint64 2) . toScope $
-              Core.Call Type.Uint64 (Core.Name "f") [Core.Var . F $ B (), Core.Var $ B ()]
+              Core.Call Type.Uint64 (Core.Name "f") [] [Core.Var . F $ B (), Core.Var $ B ()]
         )
           `shouldCompileTo` [ ".text"
                             , ".global main"
@@ -132,7 +132,7 @@ spec =
       it "f : Fn (Uint64, Uint64) Uint64 |- let x = 1; let y = 2; let z = f(x, y); x + z" $
         ( Core.Let Type.Uint64 (Just "x") Type.Uint64 (Core.Literal $ Literal.Uint64 1) . toScope $
             Core.Let Type.Uint64 (Just "y") Type.Uint64 (Core.Literal $ Literal.Uint64 2) . toScope $
-              Core.Let Type.Uint64 (Just "z") Type.Uint64 (Core.Call Type.Uint64 (Core.Name "f") [Core.Var . F $ B (), Core.Var $ B ()]) . toScope $
+              Core.Let Type.Uint64 (Just "z") Type.Uint64 (Core.Call Type.Uint64 (Core.Name "f") [] [Core.Var . F $ B (), Core.Var $ B ()]) . toScope $
                 Core.Add Type.Uint64 (Core.Var . F . F $ B ()) (Core.Var $ B ())
         )
           `shouldCompileTo` [ ".text"
@@ -156,7 +156,7 @@ spec =
       it "f : Fn (Uint64, Uint64) Uint64 |- let x = 1; let y = 2; let z = f(y, x); x + z" $
         ( Core.Let Type.Uint64 (Just "x") Type.Uint64 (Core.Literal $ Literal.Uint64 1) . toScope $
             Core.Let Type.Uint64 (Just "y") Type.Uint64 (Core.Literal $ Literal.Uint64 2) . toScope $
-              Core.Let Type.Uint64 (Just "z") Type.Uint64 (Core.Call Type.Uint64 (Core.Name "f") [Core.Var $ B (), Core.Var . F $ B ()]) . toScope $
+              Core.Let Type.Uint64 (Just "z") Type.Uint64 (Core.Call Type.Uint64 (Core.Name "f") [] [Core.Var $ B (), Core.Var . F $ B ()]) . toScope $
                 Core.Add Type.Uint64 (Core.Var . F . F $ B ()) (Core.Var $ B ())
         )
           `shouldCompileTo` [ ".text"
@@ -207,6 +207,7 @@ spec =
       it "f(x : Uint64, y : Uint64) : Uint64 = x + y" $
         Core.Function
           { name = "f"
+          , tyArgs = []
           , args = [("x", Type.Uint64), ("y", Type.Uint64)]
           , retTy = Type.Uint64
           , body = Core.Add Type.Uint64 (Core.Var 0) (Core.Var 1)
@@ -223,6 +224,7 @@ spec =
           (fromList [Rax])
           Core.Function
             { name = "f"
+            , tyArgs = []
             , args = [("x", Type.Uint64), ("y", Type.Uint64)]
             , retTy = Type.Uint64
             , body = Core.Add Type.Uint64 (Core.Var 0) (Core.Var 1)
@@ -241,6 +243,7 @@ spec =
           (fromList [Rax])
           Core.Function
             { name = "f"
+            , tyArgs = []
             , args = [("x", Type.Uint64), ("y", Type.Uint64), ("z", Type.Uint64)]
             , retTy = Type.Uint64
             , body = Core.Add Type.Uint64 (Core.Add Type.Uint64 (Core.Var 0) (Core.Var 1)) (Core.Var 2)

@@ -4,7 +4,9 @@ module Test.Liveness (spec) where
 
 import Bound.Scope.Simple (toScope)
 import Bound.Var (Var (..))
-import Data.Void (absurd)
+import Data.CallStack (HasCallStack)
+import Data.HashMap.Strict (HashMap)
+import Data.Void (Void, absurd)
 import qualified Metis.Anf as Anf
 import Metis.Core (Expr (..))
 import qualified Metis.Literal as Literal
@@ -16,6 +18,13 @@ import Test.Hspec (Spec, describe, it, shouldBe)
 spec :: Spec
 spec =
   describe "Test.Liveness" $ do
+    let
+      livenessShouldBe :: (HasCallStack) => Expr Void Void -> HashMap Anf.Var Liveness -> IO ()
+      livenessShouldBe expr expectation = do
+        let (_info, anf) = Anf.fromCore absurd absurd expr
+        let liveness = Liveness.liveness anf
+
+        liveness `shouldBe` expectation
     it "let x = 99; x + x" $ do
       let
         expr =
@@ -24,13 +33,11 @@ spec =
            in
             Let Type.Uint64 Nothing Type.Uint64 lit99 . toScope $
               Add Type.Uint64 (Var $ B ()) (Var $ B ())
-      let (_info, anf) = Anf.fromCore absurd expr
-      let liveness = Liveness.liveness anf
 
-      liveness
-        `shouldBe` [ (Anf.MkVar 0, Liveness{kills = []})
-                   , (Anf.MkVar 1, Liveness{kills = [Anf.MkVar 0]})
-                   ]
+      expr
+        `livenessShouldBe` [ (Anf.MkVar 0, Liveness{kills = []})
+                           , (Anf.MkVar 1, Liveness{kills = [Anf.MkVar 0]})
+                           ]
     it "let x = if true then let y = 1; y + 98 else let y = 2; let z = 3; y + z + 95; x + x" $ do
       let
         expr =
@@ -70,19 +77,17 @@ spec =
       %8 = %7 + %7
       %8
       -}
-      let (_info, anf) = Anf.fromCore absurd expr
-      let liveness = Liveness.liveness anf
 
-      liveness
-        `shouldBe` [ (Anf.MkVar 0, Liveness{kills = []})
-                   , (Anf.MkVar 1, Liveness{kills = [Anf.MkVar 0]})
-                   , (Anf.MkVar 2, Liveness{kills = []})
-                   , (Anf.MkVar 3, Liveness{kills = []})
-                   , (Anf.MkVar 4, Liveness{kills = [Anf.MkVar 2, Anf.MkVar 3]})
-                   , (Anf.MkVar 5, Liveness{kills = [Anf.MkVar 4]})
-                   , (Anf.MkVar 7, Liveness{kills = [Anf.MkVar 1, Anf.MkVar 5]})
-                   , (Anf.MkVar 8, Liveness{kills = [Anf.MkVar 7]})
-                   ]
+      expr
+        `livenessShouldBe` [ (Anf.MkVar 0, Liveness{kills = []})
+                           , (Anf.MkVar 1, Liveness{kills = [Anf.MkVar 0]})
+                           , (Anf.MkVar 2, Liveness{kills = []})
+                           , (Anf.MkVar 3, Liveness{kills = []})
+                           , (Anf.MkVar 4, Liveness{kills = [Anf.MkVar 2, Anf.MkVar 3]})
+                           , (Anf.MkVar 5, Liveness{kills = [Anf.MkVar 4]})
+                           , (Anf.MkVar 7, Liveness{kills = [Anf.MkVar 1, Anf.MkVar 5]})
+                           , (Anf.MkVar 8, Liveness{kills = [Anf.MkVar 7]})
+                           ]
     it "let x = 1; let y = if true then x else 22; x + y" $ do
       let
         expr =
@@ -103,20 +108,18 @@ spec =
       %3 = %0 + %2
       %3
       -}
-      let (_info, anf) = Anf.fromCore absurd expr
-      let liveness = Liveness.liveness anf
 
-      liveness
-        `shouldBe` [ (Anf.MkVar 0, Liveness{kills = []})
-                   , (Anf.MkVar 2, Liveness{kills = []})
-                   , (Anf.MkVar 3, Liveness{kills = [Anf.MkVar 0, Anf.MkVar 2]})
-                   ]
+      expr
+        `livenessShouldBe` [ (Anf.MkVar 0, Liveness{kills = []})
+                           , (Anf.MkVar 2, Liveness{kills = []})
+                           , (Anf.MkVar 3, Liveness{kills = [Anf.MkVar 0, Anf.MkVar 2]})
+                           ]
     it "let x = 1; let y = 2; let z = f(y, x); x + z" $ do
       let
         expr =
           Let Type.Uint64 (Just "x") Type.Uint64 (Literal $ Literal.Uint64 1) . toScope $
             Let Type.Uint64 (Just "y") Type.Uint64 (Literal $ Literal.Uint64 2) . toScope $
-              Let Type.Uint64 (Just "z") Type.Uint64 (Call Type.Uint64 (Name "f") [Var $ B (), Var . F $ B ()]) . toScope $
+              Let Type.Uint64 (Just "z") Type.Uint64 (Call Type.Uint64 (Name "f") [] [Var $ B (), Var . F $ B ()]) . toScope $
                 Add Type.Uint64 (Var . F . F $ B ()) (Var $ B ())
 
       {-
@@ -125,12 +128,10 @@ spec =
       %2 = f(%1, %0)
       %3 = %0 + %2
       -}
-      let (_info, anf) = Anf.fromCore absurd expr
-      let liveness = Liveness.liveness anf
 
-      liveness
-        `shouldBe` [ (Anf.MkVar 0, Liveness{kills = []})
-                   , (Anf.MkVar 1, Liveness{kills = []})
-                   , (Anf.MkVar 2, Liveness{kills = [Anf.MkVar 1]})
-                   , (Anf.MkVar 3, Liveness{kills = [Anf.MkVar 0, Anf.MkVar 2]})
-                   ]
+      expr
+        `livenessShouldBe` [ (Anf.MkVar 0, Liveness{kills = []})
+                           , (Anf.MkVar 1, Liveness{kills = []})
+                           , (Anf.MkVar 2, Liveness{kills = [Anf.MkVar 1]})
+                           , (Anf.MkVar 3, Liveness{kills = [Anf.MkVar 0, Anf.MkVar 2]})
+                           ]

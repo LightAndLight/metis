@@ -4,7 +4,16 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Metis.Isa.X86_64 (X86_64, Register (..), Instruction (..), Inst2 (..)) where
+module Metis.Isa.X86_64 (
+  X86_64,
+  Register (..),
+  Instruction (..),
+  Inst2 (..),
+
+  -- * x86_64 specific instructions
+  Movzbq (..),
+  Movb (..),
+) where
 
 import Data.Hashable (Hashable)
 import GHC.Generics (Generic)
@@ -36,6 +45,7 @@ instance Isa X86_64 where
     | Rbx
     | Rcx
     | Rdx
+    | Dl
     | Rbp
     | Rsp
     | Rsi
@@ -78,6 +88,7 @@ instance Isa X86_64 where
       Rbx -> "rbx"
       Rcx -> "rcx"
       Rdx -> "rdx"
+      Dl -> "dl"
       Rbp -> "rbp"
       Rsp -> "rsp"
       Rsi -> "rsi"
@@ -112,10 +123,18 @@ instance Hashable (Register X86_64)
 
 data Inst2
   = Mov
+  | Movzbq
+  | Movb
   | Add
   | Sub
   | Xor
   deriving (Eq, Show)
+
+class Movzbq a b where movzbq :: Op2 a b -> Instruction X86_64
+instance Movzbq (Memory X86_64) (Register X86_64) where movzbq = Inst2_mr Movzbq
+
+class Movb a b where movb :: Op2 a b -> Instruction X86_64
+instance Movb (Register X86_64) (Memory X86_64) where movb = Inst2_rm Movb
 
 instance Mov X86_64 Immediate (Register X86_64) where mov = Inst2_ir Mov
 instance Mov X86_64 Immediate (Memory X86_64) where mov = Inst2_im Mov
