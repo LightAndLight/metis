@@ -28,6 +28,7 @@ import Metis.Core (Expr (..), Function (..))
 import Metis.InstSelection (instSelectionFunction_X86_64, instSelection_X86_64)
 import Metis.Isa (generalPurposeRegisters)
 import Metis.Isa.X86_64 (Register (..), X86_64)
+import qualified Metis.Kind as Kind
 import qualified Metis.Literal as Literal
 import qualified Metis.Liveness as Liveness
 import Metis.Log (handleLogging)
@@ -58,7 +59,7 @@ testCase TestCase{title, definitions, expr, availableRegisters, expectedOutput} 
       let nameTysMap =
             ifromListL' $
               fmap (\Function{name, tyArgs, args, retTy} -> (name, Type.forall_ tyArgs $ Type.Fn (fmap snd args) retTy)) definitions
-      let nameTys name = Maybe.fromMaybe undefined $ HashMap.lookup name nameTysMap
+      let nameTys name = Maybe.fromMaybe (error $ show name <> " missing from name types map") $ HashMap.lookup name nameTysMap
 
       for_ definitions $ \function -> do
         let function' = Anf.fromFunction function
@@ -390,6 +391,85 @@ spec =
             , "mov %rax, %rbx"
             , "pop %rax"
             , "add %rbx, %rax"
+            ]
+        }
+    , TestCase
+        { title = "fn id @(a : Type) (x : a) : a = x; fn main() = let x = id @Uint64 99; x + 1"
+        , definitions =
+            [ Function
+                { name = "id"
+                , tyArgs = [("a", Kind.Type)]
+                , args = [("x", Type.Var 0)]
+                , retTy = Type.Var 0
+                , body = Var 0
+                }
+            ]
+        , expr =
+            Let Type.Uint64 (Just "x") Type.Uint64 (Call Type.Uint64 (Name "id") [Type.Uint64] [Literal $ Literal.Uint64 99]) . toScope $
+              Var (B ())
+        , availableRegisters = generalPurposeRegisters @X86_64
+        , expectedOutput =
+            [ ".text"
+            , -- begin: Uint64 type dictionary
+              "type_Uint64:"
+            , ".quad 8"
+            , ".quad type_Uint64_copy"
+            , "type_Uint64_copy:"
+            , -- rax: self
+              -- rbx: from (pointer)
+              -- rcx: to (pointer)
+              "mov (%rbx), %rdx"
+            , "mov %rdx, (%rcx)"
+            , -- return
+              "mov %rcx, %rax"
+            , "pop %rbp"
+            , "ret"
+            , -- end: Uint64 type dictionary
+              "id:" -- (a : Type, x : a) -> a
+            , {-
+              id(%a : *Type, %x : *Unknown):
+              %0 = copy(%a, %x)
+              ret %0
+              -}
+              -- `a : Type` is in `rax`
+              -- `x : a` is in `rbx`
+              -- result destination is in `rcx`
+              "mov 8(%rax), %rdx" -- load the `copy` function pointer
+              -- begin: call `copy`
+            , "push $after"
+            , "push %rbp"
+            , "mov %rsp, %rbp"
+            , "jmp *%rdx"
+            , -- end: call `copy`
+              "after:"
+            , -- return
+              -- return value is already in `rax`
+              "pop %rbp"
+            , "ret"
+            , {-
+              %0 = alloca(Uint64)
+              store(%0, 99)
+              %1 = f(&type_Uint64, %0)
+              %2 = load(%0)
+              %3 = %2 + 1
+              %3
+              -}
+              "main:"
+            , "mov %rsp, %rbp"
+            , "sub $16, %rsp" -- allocate locals
+            , "mov $99, -8(%rbp)"
+            , -- set up arguments
+              "lea type_Uint64, %rax" -- address of Uint64 type dictionary
+            , "lea -8(%rbp), %rbx" -- argument passed via stack
+            , "lea -16(%rbp), %rcx" -- result passed via stack
+            , -- begin: call `id`
+              "push $after"
+            , "push %rbp"
+            , "mov %rsp, %rbp"
+            , "jmp id"
+            , -- end: call `id`
+              "after:"
+            , "add $1, (%rax)"
             ]
         }
     ]

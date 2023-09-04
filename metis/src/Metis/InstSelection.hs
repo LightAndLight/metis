@@ -858,6 +858,8 @@ instSelectionExpr_X86_64 varSizes expr =
           nameTys <- asks (.nameTys)
           varTys <- asks (.varTys)
           case Anf.typeOf varKinds nameTys varTys function of
+            Right (Type.Forall tyVars body) ->
+              error "TODO: calling polymorphic functions" tyVars body
             Right (Type.Fn argTys retTy) -> do
               registersAvailableAtCall <- foldl' (flip HashSet.insert) mempty <$> gets (.available)
               registersKilledByCall <- do
