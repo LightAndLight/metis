@@ -1,4 +1,16 @@
+<!-- omit in toc -->
 # Type dictionaries
+
+<!-- omit in toc -->
+## Contents
+
+* [Types](#types)
+  * [Examples](#examples)
+* [Type constructors](#type-constructors)
+  * [Examples](#examples-1)
+* [Type parameters](#type-parameters)
+  * [Examples](#examples-2)
+* [Prior art](#prior-art)
 
 ## Types
 
@@ -17,6 +29,7 @@ void Type_copy(const Type* self, void* from, void* to) {
 
 ### Examples
 
+<!-- omit in toc -->
 #### `Bool : Type`
 
 ```c
@@ -30,6 +43,7 @@ const Type Type_Bool = {
 };
 ```
 
+<!-- omit in toc -->
 #### `Uint64 : Type`
 
 ```c
@@ -60,6 +74,7 @@ void* TyCtor_apply(const TyCtor* self, const Type* arg, void* result) {
 
 ### Examples
 
+<!-- omit in toc -->
 #### `Pair : Type -> Type -> Type`
 
 ```
@@ -135,6 +150,7 @@ const TyCtor TyCtor_Pair0 = {
 };
 ```
 
+<!-- omit in toc -->
 #### `FPair : (Type -> Type) -> (Type -> Type) -> Type -> Type`
 
 `data FPair f g a = FPair { first : f a, second : g a }`
@@ -146,16 +162,34 @@ typedef struct {
   const Type* g_a;
 } Type_FPair;
 
+void* Type_FPair_first(const Type_FPair* self, void* fpair) {
+  return fpair;
+}
+
+void* Type_FPair_second(const Type_FPair* self, void* fpair) {
+  return fpair + self->f_a->size;
+}
+
 void Type_FPair_copy(const void* self_void, void* from, void* to) {
   Type_FPair* self = (Type_FPair*)self_void;
-  Type_copy(self->f_a, from, to);
-  Type_copy(self->g_a, from + self->f_a->size, to + self->f_a->size);
+  Type_copy(
+    self->f_a,
+    Type_FPair_first(self, from),
+    Type_FPair_first(self, to)
+  );
+  Type_copy(
+    self->g_a,
+    Type_FPair_second(self, from),
+    Type_FPair_second(self, to)
+  );
 }
 
 void Type_FPair_create(const TyCtor* f, const TyCtor* g, const Type* a, Type_FPair* result) {
-  // This function only works when it's inlined at its call sites.
-  // It returns pointers created by `alloca`, which are invalid outside the
-  // scope of the function.
+  /* This "function" only works when it's inlined at its call sites.
+  It returns pointers created by `alloca`, which are invalid outside the
+  scope of the function.
+  */
+
   void* f_a_data = alloca(f->apply_result_size);
   TyCtor_apply(f, a, f_a_data);
   Type* f_a = (Type*)f_a_data;
@@ -169,6 +203,33 @@ void Type_FPair_create(const TyCtor* f, const TyCtor* g, const Type* a, Type_FPa
   result->f_a = f_a;
   result->g_a = g_a;
 }
+```
+
+## Type parameters
+
+### Examples
+
+<!-- omit in toc -->
+#### `forall a. a -> a`
+
+```
+id @(a : Type) (x : a) : a = x
+```
+
+```c
+void id(Type* type_a, void* x, void* output) {
+  Type_copy(x, output);
+}
+```
+
+```
+id True
+```
+
+```c
+Bool input = True;
+Bool output;
+id(&Type_Bool, &input, &output);
 ```
 
 ## Prior art
