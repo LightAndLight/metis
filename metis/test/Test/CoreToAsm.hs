@@ -425,8 +425,7 @@ spec =
               "mov (%rbx), %rdx"
             , "mov %rdx, (%rcx)"
             , -- return
-              "mov %rcx, %rax"
-            , "pop %rbp"
+              "pop %rbp"
             , "ret"
             , -- end: Uint64 copy
               "id:" -- (a : Type, x : a) -> a

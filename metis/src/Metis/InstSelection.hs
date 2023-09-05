@@ -705,7 +705,7 @@ generateTypeDict name ty =
         -- Type_Uint64_copy(self : *Type, from : *Uint64, to : *Uint64)
         Asm.block "Type_Uint64_copy" [] . fmap Instruction $
           [ mov Op2{src = Mem{base = Rbx, offset = 0}, dest = Rdx}
-          , mov Op2{dest = Rdx, src = Mem{base = Rcx, offset = 0}}
+          , mov Op2{src = Rdx, dest = Mem{base = Rcx, offset = 0}}
           , pop Rbp
           , ret ()
           ]
@@ -731,7 +731,7 @@ generateTypeDict name ty =
       copy <-
         Asm.block "Type_Fn_copy" [] . fmap Instruction $
           [ mov Op2{src = Mem{base = Rbx, offset = 0}, dest = Rdx}
-          , mov Op2{dest = Rdx, src = Mem{base = Rcx, offset = 0}}
+          , mov Op2{src = Rdx, dest = Mem{base = Rcx, offset = 0}}
           , pop Rbp
           , ret ()
           ]
@@ -744,7 +744,7 @@ generateTypeDict name ty =
       copy <-
         Asm.block "Type_Forall_copy" [] . fmap Instruction $
           [ mov Op2{src = Mem{base = Rbx, offset = 0}, dest = Rdx}
-          , mov Op2{dest = Rdx, src = Mem{base = Rcx, offset = 0}}
+          , mov Op2{src = Rdx, dest = Mem{base = Rcx, offset = 0}}
           , pop Rbp
           , ret ()
           ]
