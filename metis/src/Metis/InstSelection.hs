@@ -767,7 +767,7 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
   rec let localsSize = fromIntegral @Int64 @Word64 (-s'.nextStackOffset)
       ((), s') <- runInstSelectionT nameTys function.bodyInfo initial $ do
         -- TODO: set up type arguments
-        stackArgumentsSize <- setupArguments function.args
+        stackArgumentsSize <- setupArguments function.tyArgs function.args
         emit [sub Op2{dest = Rsp, src = imm localsSize} | localsSize > 0]
         -- TODO: something for values that are returned via stack
         value <- instSelectionExpr_X86_64 mempty function.body
@@ -807,46 +807,88 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
   where
     {- TODO: this code is basically the same as `setupFunctionArguments`. Make it the same code?
     -}
-    setupArguments :: (MonadState (InstSelectionState isa) m) => [(Anf.Var, Type Anf.Var)] -> m Word64
-    setupArguments args =
-      case args of
-        [] -> pure 0
-        arg : args' -> do
-          case Type.callingConventionOf $ snd arg of
-            Type.Register -> do
-              available <- gets (.available)
-              case Seq.viewl available of
-                register Seq.:< available' -> do
-                  modify
-                    ( \s ->
-                        s
-                          { available = available'
-                          , locations = HashMap.insert (fst arg) (Register register) s.locations
-                          }
-                    )
-                  setupArguments args'
-                Seq.EmptyL ->
-                  setupStackArguments
-                    (fromIntegral @Word64 @Int64 Type.pointerSize)
-                    0
-                    args -- we couldn't allocate register for `arg`, so try again with the stack
-            Type.Composite{} ->
-              error "TODO: composite function arguments"
-
-    setupStackArguments :: (MonadState (InstSelectionState isa) m) => Int64 -> Word64 -> [(Anf.Var, Type Anf.Var)] -> m Word64
-    setupStackArguments offset size args =
-      case args of
-        [] -> pure size
-        (argVar, argTy) : args' ->
-          case Type.callingConventionOf argTy of
-            Type.Register -> do
-              modify (\s -> s{locations = HashMap.insert argVar (Stack offset) s.locations})
-              let argTySize = Type.sizeOf argTy
+    setupArguments ::
+      (MonadState (InstSelectionState isa) m) =>
+      [(Anf.Var, Kind)] ->
+      [(Anf.Var, Type Anf.Var)] ->
+      m Word64
+    setupArguments tyArgs args =
+      case tyArgs of
+        tyArg : tyArgs' -> do
+          available <- gets (.available)
+          case Seq.viewl available of
+            register Seq.:< available' -> do
+              modify
+                ( \s ->
+                    s
+                      { available = available'
+                      , locations = HashMap.insert (fst tyArg) (Register register) s.locations
+                      }
+                )
+              setupArguments tyArgs' args
+            Seq.EmptyL ->
               setupStackArguments
-                (offset + fromIntegral @Word64 @Int64 argTySize)
-                (size + argTySize)
-                args'
-            Type.Composite{} -> error "TODO: composite stack function arguments"
+                (fromIntegral @Word64 @Int64 Type.pointerSize)
+                0
+                tyArgs
+                args
+        [] ->
+          case args of
+            [] -> pure 0
+            arg : args' -> do
+              case Type.callingConventionOf $ snd arg of
+                Type.Register -> do
+                  available <- gets (.available)
+                  case Seq.viewl available of
+                    register Seq.:< available' -> do
+                      modify
+                        ( \s ->
+                            s
+                              { available = available'
+                              , locations = HashMap.insert (fst arg) (Register register) s.locations
+                              }
+                        )
+                      setupArguments tyArgs args'
+                    Seq.EmptyL ->
+                      setupStackArguments
+                        (fromIntegral @Word64 @Int64 Type.pointerSize)
+                        0
+                        tyArgs
+                        args -- we couldn't allocate register for `arg`, so try again with the stack
+                Type.Composite{} ->
+                  error "TODO: composite function arguments"
+
+    setupStackArguments ::
+      (MonadState (InstSelectionState isa) m) =>
+      Int64 ->
+      Word64 ->
+      [(Anf.Var, Kind)] ->
+      [(Anf.Var, Type Anf.Var)] ->
+      m Word64
+    setupStackArguments offset size tyArgs args =
+      case tyArgs of
+        (tyArgVar, _tyArgKind) : tyArgs' -> do
+          modify (\s -> s{locations = HashMap.insert tyArgVar (Stack offset) s.locations})
+          let tyArgSize = Type.pointerSize
+          setupStackArguments
+            (offset + fromIntegral @Word64 @Int64 tyArgSize)
+            (size + tyArgSize)
+            tyArgs'
+            args
+        [] ->
+          case args of
+            [] -> pure size
+            (argVar, argTy) : args' ->
+              case Type.callingConventionOf argTy of
+                Type.Register -> do
+                  modify (\s -> s{locations = HashMap.insert argVar (Stack offset) s.locations})
+                  let argTySize = Type.sizeOf argTy
+                  setupStackArguments
+                    (offset + fromIntegral @Word64 @Int64 argTySize)
+                    (size + argTySize)
+                    tyArgs
+                    args'
+                Type.Composite{} -> error "TODO: composite stack function arguments"
 
 data ClassifiedArguments isa = ClassifiedArguments
   { typeArgs :: [(Value isa, Kind)]
