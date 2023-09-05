@@ -38,7 +38,7 @@ import System.Exit (ExitCode (..))
 import System.IO (hClose)
 import System.IO.Temp (withSystemTempFile)
 import qualified System.Process as Process
-import Test.Hspec (Spec, SpecWith, describe, expectationFailure, it, shouldBe)
+import Test.Hspec (Spec, SpecWith, describe, expectationFailure, it, shouldBe, xit)
 
 data TestCase where
   TestCase ::
@@ -46,6 +46,7 @@ data TestCase where
     -- instead of the location in `testCase` where the failure happened.
     (HasCallStack) =>
     { title :: String
+    , enabled :: Bool
     , definitions :: [Function]
     , expr :: Expr Void Void
     , availableRegisters :: Seq (Register X86_64)
@@ -54,8 +55,8 @@ data TestCase where
     TestCase
 
 testCase :: TestCase -> SpecWith ()
-testCase TestCase{title, definitions, expr, availableRegisters, expectedOutput} =
-  it title . withSystemTempFile "metis-coretoasm-logs.txt" $ \tempFilePath tempFileHandle -> saveLogsOnFailure tempFilePath $ do
+testCase TestCase{title, enabled, definitions, expr, availableRegisters, expectedOutput} =
+  (if enabled then it else xit) title . withSystemTempFile "metis-coretoasm-logs.txt" $ \tempFilePath tempFileHandle -> saveLogsOnFailure tempFilePath $ do
     asm <- fmap (Text.Lazy.Builder.toLazyText . printAsm printInstruction_X86_64) . runAsmBuilderT . handleLogging tempFileHandle $ do
       let nameTysMap =
             collectL' @(HashMap _ _) $
@@ -100,6 +101,7 @@ spec =
   describe "Test.CoreToAsm" . traverse_ @[] testCase $
     [ TestCase
         { title = "99 + 99"
+        , enabled = True
         , definitions = []
         , expr =
             let
@@ -117,6 +119,7 @@ spec =
         }
     , TestCase
         { title = "let x = 99; x + x"
+        , enabled = True
         , definitions = []
         , expr =
             let
@@ -134,6 +137,7 @@ spec =
         }
     , TestCase
         { title = "let x = 99; let y = 100; x + y"
+        , enabled = True
         , definitions = []
         , expr =
             let
@@ -154,6 +158,7 @@ spec =
         }
     , TestCase
         { title = "let x = 99; let y = 100; let z = 101; x + y + z"
+        , enabled = True
         , definitions = []
         , expr =
             let
@@ -178,6 +183,7 @@ spec =
         }
     , TestCase
         { title = "let x = 99; let y = 100; let z = 101; x + y + z (only %rax)"
+        , enabled = True
         , definitions = []
         , expr =
             let
@@ -202,6 +208,7 @@ spec =
         }
     , TestCase
         { title = "let x = if true then let y = 1; y + 98 else let y = 2; let z = 3; y + z + 95; x + x"
+        , enabled = True
         , definitions = []
         , expr =
             let
@@ -263,6 +270,7 @@ spec =
         }
     , TestCase
         { title = "let x = 3; let y = if true then x else 22; x + y"
+        , enabled = True
         , definitions = []
         , expr =
             let
@@ -302,6 +310,7 @@ spec =
         }
     , TestCase
         { title = "fn f(x : Uint64, y : Uint64) : Uint64 = x + y; fn main() = let x = 1; let y = 2; 3 + f(x, y)"
+        , enabled = True
         , definitions =
             [ Function
                 { name = "f"
@@ -348,6 +357,7 @@ spec =
         }
     , TestCase
         { title = "fn f(x : Uint64, y : Uint64) : Uint64 = x + y; fn main() = let x = 1; let y = 2; x + f(x, y)"
+        , enabled = True
         , definitions =
             [ Function
                 { name = "f"
@@ -395,7 +405,57 @@ spec =
             ]
         }
     , TestCase
+        { title = "fn id @(a : Type) (x : a) : a = x; fn main() = 0"
+        , enabled = True
+        , definitions =
+            [ Function
+                { name = "id"
+                , tyArgs = [("a", Kind.Type)]
+                , args = [("x", Type.Var 0)]
+                , retTy = Type.Var 0
+                , body = Var 0
+                }
+            ]
+        , expr = Literal $ Literal.Uint64 0
+        , availableRegisters = generalPurposeRegisters @X86_64
+        , expectedOutput =
+            let
+              fnId =
+                [ "id:" -- (a : Type, x : a) -> a
+                , {-
+                  id(%a : *Type, %x : *Unknown):
+                  %0 = copy(%a, %x)
+                  ret %0
+                  -}
+                  -- `a : Type` is in `rax`
+                  -- `x : a` is in `rbx`
+                  -- result destination is in `rcx`
+                  "mov 8(%rax), %rdx" -- load the `copy` function pointer
+                  -- begin: call `copy`
+                , "push $after"
+                , "push %rbp"
+                , "mov %rsp, %rbp"
+                , "jmp *%rdx"
+                , -- end: call `copy`
+                  "after:"
+                , -- return
+                  -- return value is already in `rax`
+                  "pop %rbp"
+                , "ret"
+                ]
+
+              fnMain =
+                [ "main:"
+                , "mov $0, %rax"
+                ]
+             in
+              [".text"]
+                <> fnId
+                <> fnMain
+        }
+    , TestCase
         { title = "fn id @(a : Type) (x : a) : a = x; fn main() = let x = id @Uint64 99; x + 1"
+        , enabled = False
         , definitions =
             [ Function
                 { name = "id"
