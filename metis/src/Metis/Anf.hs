@@ -39,7 +39,6 @@ import Data.Functor.Identity (runIdentity)
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 import Data.Hashable (Hashable)
-import qualified Data.Maybe as Maybe
 import Data.Text (Text)
 import Data.Word (Word64)
 import qualified Metis.Core as Core
@@ -82,10 +81,11 @@ data Binop = Add | Subtract
   deriving (Show, Eq)
 
 data ExprInfo = ExprInfo
-  { labelArgs :: Var -> Var
-  , varKinds :: Var -> Kind
-  , varTys :: Var -> Type Var
+  { labelArgs :: HashMap Var Var
+  , varKinds :: HashMap Var Kind
+  , varTys :: HashMap Var (Type Var)
   }
+  deriving (Eq, Show)
 
 data Function = Function
   { name :: Text
@@ -95,6 +95,7 @@ data Function = Function
   , bodyInfo :: ExprInfo
   , body :: Expr
   }
+  deriving (Eq, Show)
 
 data AnfBuilderState = AnfBuilderState
   { nextVar :: Word64
@@ -185,18 +186,9 @@ programOf ma =
 fromCore :: (ty -> Var) -> (tm -> Var) -> Core.Expr ty tm -> (ExprInfo, Expr)
 fromCore toTyVar toVar expr =
   ( ExprInfo
-      { labelArgs = \label ->
-          Maybe.fromMaybe
-            (error $ show label <> " missing from label args map")
-            (HashMap.lookup label s.labelArgs)
-      , varKinds = \var ->
-          Maybe.fromMaybe
-            (error $ show var <> " missing from variable kinds map")
-            (HashMap.lookup var s.varKinds)
-      , varTys = \var ->
-          Maybe.fromMaybe
-            (error $ show var <> " missing from variable types map")
-            (HashMap.lookup var s.varTys)
+      { labelArgs = s.labelArgs
+      , varKinds = s.varKinds
+      , varTys = s.varTys
       }
   , s.program (Return simple)
   )
@@ -210,21 +202,7 @@ fromFunction Core.Function{name, tyArgs, args, retTy, body} =
     , tyArgs = tyArgs'
     , args = args'
     , retTy = retTy'
-    , bodyInfo =
-        ExprInfo
-          { labelArgs = \label ->
-              Maybe.fromMaybe
-                (error $ show label <> " missing from label args map")
-                (HashMap.lookup label labelArgs)
-          , varKinds = \var ->
-              Maybe.fromMaybe
-                (error $ show var <> " missing from variable kinds map")
-                (HashMap.lookup var varKinds)
-          , varTys = \var ->
-              Maybe.fromMaybe
-                (error $ show var <> " missing from variable types map")
-                (HashMap.lookup var varTys)
-          }
+    , bodyInfo = ExprInfo{labelArgs, varKinds, varTys}
     , body = program (Return simple)
     }
   where

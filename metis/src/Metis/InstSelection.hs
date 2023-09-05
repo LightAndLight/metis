@@ -264,11 +264,11 @@ runInstSelectionT nameTys exprInfo s ma = do
           ( runReaderT
               ma
               InstSelectionEnv
-                { labelArgs = exprInfo.labelArgs
+                { labelArgs = \label -> Maybe.fromMaybe (error $ "label " <> show label <> " missing from label args map") $ HashMap.lookup label exprInfo.labelArgs
                 , labelArgLocations = s'.labelArgLocations
                 , nameTys
-                , varKinds = exprInfo.varKinds
-                , varTys = exprInfo.varTys
+                , varKinds = \var -> Maybe.fromMaybe (error $ "var " <> show var <> " missing from var kinds map") $ HashMap.lookup var exprInfo.varKinds
+                , varTys = \var -> Maybe.fromMaybe (error $ "var " <> show var <> " missing from var types map") $ HashMap.lookup var exprInfo.varTys
                 }
           )
           s
