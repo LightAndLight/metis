@@ -15,6 +15,7 @@ module Metis.InstSelection (
   -- * Internals
   Location (..),
   Value (..),
+  Address (..),
   InstSelectionState (..),
   initialInstSelectionState,
   instSelectionExpr_X86_64,
@@ -64,6 +65,7 @@ import Metis.Isa (
   imm,
   je,
   jmp,
+  lea,
   mov,
   pop,
   push,
@@ -90,10 +92,17 @@ deriving instance (Eq (Register isa)) => Eq (Location isa)
 
 data Value isa
   = ValueAt (Location isa)
-  | Address Symbol
+  | AddressOf (Address isa)
 
 deriving instance (Show (Register isa)) => Show (Value isa)
 deriving instance (Eq (Register isa)) => Eq (Value isa)
+
+data Address isa
+  = Symbol Symbol
+  | Memory (Memory isa)
+
+deriving instance (Show (Register isa)) => Show (Address isa)
+deriving instance (Eq (Register isa)) => Eq (Address isa)
 
 data InstSelectionState isa = InstSelectionState
   { nextStackOffset :: Int64
@@ -166,7 +175,7 @@ declareLabel ::
   m (Symbol, m ())
 declareLabel value = do
   pure
-    ( Symbol value
+    ( Metis.Isa.Symbol value
     , modify
         ( \s ->
             s
@@ -190,7 +199,7 @@ beginBlock ::
   Text ->
   m Symbol
 beginBlock label =
-  Symbol label
+  Metis.Isa.Symbol label
     <$ modify
       ( \s ->
           s
@@ -208,6 +217,16 @@ beginBlock label =
             }
       )
 
+allocStack ::
+  (MonadState (InstSelectionState isa) m) =>
+  Word64 ->
+  m Int64
+allocStack size = do
+  previousStackOffset <- gets (.nextStackOffset)
+  let offset = previousStackOffset - fromIntegral @Word64 @Int64 size
+  modify (\s -> s{nextStackOffset = offset})
+  pure offset
+
 allocLocation ::
   (MonadState (InstSelectionState isa) m) =>
   Word64 ->
@@ -215,12 +234,8 @@ allocLocation ::
 allocLocation size = do
   available <- gets (.available)
   case Seq.viewl available of
-    Seq.EmptyL -> do
-      offset <- gets (.nextStackOffset)
-      let nextStackOffset = offset - fromIntegral @Word64 @Int64 size
-      let location = Stack nextStackOffset
-      modify (\s -> s{nextStackOffset})
-      pure location
+    Seq.EmptyL ->
+      Stack <$> allocStack size
     register Seq.:< available' -> do
       modify (\s -> s{available = available'})
       pure $ Register register
@@ -297,7 +312,7 @@ instSelectionLiteral_X86_64 lit = do
 
 typeDict :: (MonadState (InstSelectionState X86_64) m, MonadLog m) => Type Anf.Var -> m Symbol
 typeDict ty = do
-  let label = Symbol{value = typeDictLabel ty}
+  let label = Metis.Isa.Symbol{value = typeDictLabel ty}
   modify (\s -> s{typeDicts = HashMap.insert label ty s.typeDicts})
   pure label
   where
@@ -324,13 +339,13 @@ instSelectionType_X86_64 ty = do
     Type.Var var ->
       ValueAt <$> lookupLocation var
     Type.Uint64 ->
-      Address <$> typeDict ty
+      AddressOf . Metis.InstSelection.Symbol <$> typeDict ty
     Type.Bool ->
-      Address <$> typeDict ty
+      AddressOf . Metis.InstSelection.Symbol <$> typeDict ty
     Type.Fn{} ->
-      Address <$> typeDict ty
+      AddressOf . Metis.InstSelection.Symbol <$> typeDict ty
     Type.Forall{} ->
-      Address <$> typeDict ty
+      AddressOf . Metis.InstSelection.Symbol <$> typeDict ty
 
 instSelectionSimple_X86_64 ::
   (MonadState (InstSelectionState X86_64) m, MonadLog m) =>
@@ -345,7 +360,7 @@ instSelectionSimple_X86_64 simple =
     Anf.Type ty ->
       instSelectionType_X86_64 ty
     Anf.Name name ->
-      pure $ Address Symbol{value = name}
+      pure . AddressOf $ Metis.InstSelection.Symbol Metis.Isa.Symbol{value = name}
 
 freeVars :: (Isa isa, MonadState (InstSelectionState isa) m, MonadLog m) => HashSet Anf.Var -> m ()
 freeVars vars = do
@@ -412,10 +427,11 @@ data StackFunctionArgument isa = StackFunctionArgument
   }
 
 setupFunctionArguments ::
+  (MonadState (InstSelectionState X86_64) m) =>
   Seq (Register X86_64) ->
   [(Value X86_64, Kind)] ->
-  [(Value X86_64, Type Anf.Var)] ->
-  FunctionArguments X86_64
+  [(Value X86_64, Type Anf.Var, Type Anf.Var)] ->
+  m (FunctionArguments X86_64)
 setupFunctionArguments availableArgumentRegisters typeArgs valueArgs =
   case Seq.viewl availableArgumentRegisters of
     register Seq.:< availableArgumentRegisters' ->
@@ -423,38 +439,54 @@ setupFunctionArguments availableArgumentRegisters typeArgs valueArgs =
         [] ->
           case valueArgs of
             [] ->
-              mempty
-            (argLocation, argTy) : valueArgs' ->
-              ( case Type.callingConventionOf argTy of
-                  Type.Register ->
-                    FunctionArguments
-                      { registerFunctionArguments =
-                          [ RegisterFunctionArgument
-                              { size = Type.sizeOf argTy
-                              , src = argLocation
-                              , dest = register
-                              }
-                          ]
-                      , stackFunctionArguments = []
-                      }
-                  Type.Composite{} -> error "TODO: types with composite calling conventions"
-              )
-                <> setupFunctionArguments
+              pure mempty
+            (argLocation, expectedArgTy, actualArgTy) : valueArgs' -> do
+              -- create extra locals when necessary
+              functionArgument <-
+                case expectedArgTy of
+                  Type.Var{} | (case actualArgTy of Type.Var{} -> False; _ -> True) -> do
+                    offset <- allocStack $ Type.sizeOf actualArgTy
+                    pure $
+                      RegisterFunctionArgument
+                        { size = Type.pointerSize
+                        , src = AddressOf $ Memory Mem{base = Rbp, offset}
+                        , dest = register
+                        }
+                  _ ->
+                    pure $
+                      RegisterFunctionArgument
+                        { size = Type.sizeOf expectedArgTy
+                        , src = argLocation
+                        , dest = register
+                        }
+              ( ( case Type.callingConventionOf expectedArgTy of
+                    Type.Register ->
+                      FunctionArguments
+                        { registerFunctionArguments = [functionArgument]
+                        , stackFunctionArguments = []
+                        }
+                    Type.Composite{} -> error "TODO: types with composite calling conventions"
+                )
+                  <>
+                )
+                <$> setupFunctionArguments
                   availableArgumentRegisters'
                   typeArgs
                   valueArgs'
         (typeArgValue, _typeArgKind) : typeArgs' ->
-          FunctionArguments
-            { registerFunctionArguments =
-                [ RegisterFunctionArgument
-                    { size = Type.pointerSize
-                    , src = typeArgValue
-                    , dest = register
-                    }
-                ]
-            , stackFunctionArguments = []
-            }
-            <> setupFunctionArguments
+          ( FunctionArguments
+              { registerFunctionArguments =
+                  [ RegisterFunctionArgument
+                      { size = Type.pointerSize
+                      , src = typeArgValue
+                      , dest = register
+                      }
+                  ]
+              , stackFunctionArguments = []
+              }
+              <>
+          )
+            <$> setupFunctionArguments
               availableArgumentRegisters'
               typeArgs'
               valueArgs
@@ -471,35 +503,40 @@ The function arguments require all available registers, so the remaining argumen
 on the stack.
 -}
 setupStackFunctionArguments ::
+  (Applicative m) =>
   Int64 ->
   [(Value X86_64, Kind)] ->
-  [(Value X86_64, Type Anf.Var)] ->
-  FunctionArguments X86_64
+  [(Value X86_64, Type Anf.Var, Type Anf.Var)] ->
+  m (FunctionArguments X86_64)
 setupStackFunctionArguments offset typeArgs valueArgs =
   case typeArgs of
     [] ->
       case valueArgs of
         [] ->
-          mempty
-        (argLocation, argTy) : valueArgs' ->
-          ( case Type.callingConventionOf argTy of
-              Type.Register ->
-                FunctionArguments
-                  { registerFunctionArguments = []
-                  , stackFunctionArguments = [StackFunctionArgument{src = argLocation, dest = Mem{base = Rbp, offset}}]
-                  }
-              Type.Composite{} -> error "TODO: types with composite calling conventions"
+          pure mempty
+        (argLocation, expectedArgTy, _actualArgTy) : valueArgs' ->
+          ( ( case Type.callingConventionOf expectedArgTy of
+                Type.Register ->
+                  FunctionArguments
+                    { registerFunctionArguments = []
+                    , stackFunctionArguments = [StackFunctionArgument{src = argLocation, dest = Mem{base = Rbp, offset}}]
+                    }
+                Type.Composite{} -> error "TODO: types with composite calling conventions"
+            )
+              <>
           )
-            <> setupStackFunctionArguments
-              (offset + fromIntegral @Word64 @Int64 (Type.sizeOf argTy))
+            <$> setupStackFunctionArguments
+              (offset + fromIntegral @Word64 @Int64 (Type.sizeOf expectedArgTy))
               typeArgs
               valueArgs'
     (typeArgValue, _typeArgKind) : typeArgs' ->
-      FunctionArguments
-        { registerFunctionArguments = []
-        , stackFunctionArguments = [StackFunctionArgument{src = typeArgValue, dest = Mem{base = Rbp, offset}}]
-        }
-        <> setupStackFunctionArguments
+      ( FunctionArguments
+          { registerFunctionArguments = []
+          , stackFunctionArguments = [StackFunctionArgument{src = typeArgValue, dest = Mem{base = Rbp, offset}}]
+          }
+          <>
+      )
+        <$> setupStackFunctionArguments
           (offset + fromIntegral @Word64 @Int64 Type.pointerSize)
           typeArgs'
           valueArgs
@@ -598,8 +635,10 @@ moveRegisterFunctionArguments registerRemapping arguments = do
                   ]
           ValueAt (Stack srcOffset) ->
             pure [mov Op2{src = Mem{base = Rbp, offset = srcOffset}, dest}]
-          Address symbol ->
+          AddressOf (Metis.InstSelection.Symbol symbol) ->
             pure [mov Op2{src = imm symbol, dest}]
+          AddressOf (Memory mem) ->
+            pure [lea Op2{src = mem, dest}]
       RegisterFunctionArgument{size, src, dest} : arguments' -> do
         temp <- allocLocation size
         a <-
@@ -632,8 +671,10 @@ moveRegisterFunctionArguments registerRemapping arguments = do
                   pure a
             ValueAt (Stack srcOffset) ->
               pure $ saveDestination temp dest <> [mov Op2{src = Mem{base = Rbp, offset = srcOffset}, dest}]
-            Address symbol ->
+            AddressOf (Metis.InstSelection.Symbol symbol) ->
               pure $ saveDestination temp dest <> [mov Op2{src = imm symbol, dest}]
+            AddressOf (Memory mem) ->
+              pure $ saveDestination temp dest <> [lea Op2{src = mem, dest}]
 
         b <- moveRegisterFunctionArguments (HashMap.insert dest temp registerRemapping) arguments'
 
@@ -842,7 +883,7 @@ storeq value destination = do
                     , -- store value to pointer
                       mov Op2{src = register, dest = Mem{base = destinationRegister, offset = 0}}
                     ]
-      Address label ->
+      AddressOf (Metis.InstSelection.Symbol label) ->
         case destination of
           Register destinationRegister ->
             [mov Op2{src = imm label, dest = Mem{base = destinationRegister, offset = 0}}]
@@ -863,6 +904,31 @@ storeq value destination = do
                 , -- store value to pointer
                   mov Op2{src = imm label, dest = Mem{base = destinationRegister, offset = 0}}
                 ]
+      AddressOf (Memory mem) ->
+        error "TODO: storeq AddressOf/Memory" mem
+
+{-
+case destination of
+  Register destinationRegister ->
+    [lea Op2{src = mem, dest = Mem{base = destinationRegister, offset = 0}}]
+  Stack destinationOffset ->
+    case Seq.viewl available of
+      Seq.EmptyL ->
+        let destinationRegister = Rax
+         in [ push destinationRegister
+            , -- load pointer from memory
+              mov Op2{src = Mem{base = Rbp, offset = destinationOffset}, dest = destinationRegister}
+            , -- store value to pointer
+              lea Op2{src = mem, dest = Mem{base = destinationRegister, offset = 0}}
+            , pop destinationRegister
+            ]
+      destinationRegister Seq.:< _ ->
+        [ -- load pointer from memory
+          mov Op2{src = Mem{base = Rbp, offset = destinationOffset}, dest = destinationRegister}
+        , -- store value to pointer
+          lea Op2{src = mem, dest = Mem{base = destinationRegister, offset = 0}}
+        ]
+-}
 
 copyValue ::
   (MonadState (InstSelectionState X86_64) m) =>
@@ -899,8 +965,10 @@ copyValue ty value outputLocation =
             [mov Op2{src = register, dest = Rbx} | register /= Rbx]
           ValueAt (Stack offset) ->
             [mov Op2{src = Mem{base = Rbp, offset}, dest = Rbx}]
-          Address label ->
+          AddressOf (Metis.InstSelection.Symbol label) ->
             [mov Op2{src = imm label, dest = Rbx}]
+          AddressOf (Memory mem) ->
+            [lea Op2{src = mem, dest = Rbx}]
 
       emit $
         case outputLocation of
@@ -975,8 +1043,10 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
                       [mov Op2{src = register, dest = Rax} | register /= Rax]
                     ValueAt (Stack offset) ->
                       [mov Op2{src = Mem{base = Rbp, offset}, dest = Rax}]
-                    Address label ->
+                    AddressOf (Metis.InstSelection.Symbol label) ->
                       [mov Op2{src = imm label, dest = Rax}]
+                    AddressOf (Memory mem) ->
+                      [lea Op2{src = mem, dest = Rax}]
               Type.Composite{} -> error "TODO: composite return values"
         emit $
           [add Op2{dest = Rsp, src = imm localsSize} | localsSize > 0]
@@ -1112,44 +1182,6 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
                     retTy
                 Type.Composite{} -> error "TODO: composite stack function arguments"
 
-data ClassifiedArguments isa = ClassifiedArguments
-  { typeArgs :: [(Value isa, Kind)]
-  , args :: [(Value isa, Type Anf.Var)]
-  , retTy :: Type Anf.Var
-  }
-
-classifyArguments :: (Isa isa) => Type Anf.Var -> [(Anf.Simple, Value isa)] -> ClassifiedArguments isa
-classifyArguments ty args =
-  case ty of
-    Type.Forall tyVars body ->
-      let
-        (usedArgs, args') = splitAt (length tyVars) args
-        usedTypeArgs =
-          fmap
-            ( \(simple, _location) ->
-                case simple of
-                  Anf.Type tyArg -> tyArg
-                  arg -> error $ "expected type argument, got " <> show arg
-            )
-            usedArgs
-        result = classifyArguments (instantiate (\index -> usedTypeArgs !! fromIntegral @Word64 @Int index) body) args'
-       in
-        result{typeArgs = zipWith (\(_, location) (_, argTy) -> (location, argTy)) usedArgs tyVars <> result.typeArgs}
-    Type.Fn argTys retTy ->
-      if length argTys /= length args
-        then
-          error $
-            "incorrect number of arguments supplied to function. expected "
-              <> show (length argTys)
-              <> ", got "
-              <> show (length args)
-              <> "("
-              <> show args
-              <> ")"
-        else ClassifiedArguments{typeArgs = [], args = zipWith (\(_, location) argTy -> (location, argTy)) args argTys, retTy}
-    _ ->
-      ClassifiedArguments{typeArgs = [], args = [], retTy = ty}
-
 instSelectionExpr_X86_64 ::
   (MonadState (InstSelectionState X86_64) m, MonadReader (InstSelectionEnv X86_64) m, MonadLog m) =>
   HashMap Anf.Var Word64 ->
@@ -1188,112 +1220,8 @@ instSelectionExpr_X86_64 varSizes expr =
       Log.trace . Text.pack $ "  value: " <> show value
 
       case value of
-        Anf.Call function args -> do
-          functionLocation <- instSelectionSimple_X86_64 function
-          argLocations <- traverse instSelectionSimple_X86_64 args
-
-          varKinds <- asks (.varKinds)
-          nameTys <- asks (.nameTys)
-          varTys <- asks (.varTys)
-          case Anf.typeOf varKinds nameTys varTys function of
-            Right ty -> do
-              let ClassifiedArguments{typeArgs, args = valueArgs, retTy} = classifyArguments ty (zip args argLocations)
-
-              registersAvailableAtCall <- collectL' @(HashSet _) <$> gets (.available)
-              registersKilledByCall <- do
-                liveness <- lookupLiveness var
-                HashSet.fromList
-                  <$> wither
-                    ( \killedVar -> do
-                        location <- lookupLocation killedVar
-                        case location of
-                          Register register -> pure $ Just register
-                          Stack{} -> pure Nothing
-                    )
-                    (HashSet.toList liveness.kills)
-              let registersUsedByFunction =
-                    getRegistersUsedByFunction
-                      (generalPurposeRegisters @X86_64)
-                      (fmap snd typeArgs)
-                      (fmap snd valueArgs)
-                      retTy
-
-              callerSavedRegisters <-
-                forMaybe (generalPurposeRegisters @X86_64) $ \register ->
-                  if not (register `HashSet.member` registersAvailableAtCall)
-                    && not (register `HashSet.member` registersKilledByCall)
-                    && register `HashSet.member` registersUsedByFunction
-                    then Just register <$ emit [push register]
-                    else pure Nothing
-
-              (label, emitLabel) <- declareLabel "after"
-              emit [push (imm label)]
-
-              -- TODO: allocate space for outputs that are passed via stack
-
-              let functionArguments =
-                    setupFunctionArguments
-                      (generalPurposeRegisters @X86_64)
-                      typeArgs
-                      valueArgs
-
-              emit =<< moveRegisterFunctionArguments mempty functionArguments.registerFunctionArguments
-
-              for_ (reverse functionArguments.stackFunctionArguments) $ \StackFunctionArgument{src, dest = _} -> do
-                emit
-                  [ case src of
-                      ValueAt (Register register) -> push register
-                      ValueAt (Stack offset) -> push Mem{base = Rbp, offset}
-                      Address symbol -> push (imm symbol)
-                  ]
-
-              emit [push Rbp]
-              emit [mov Op2{src = Rsp, dest = Rbp}]
-              emit
-                [ case functionLocation of
-                    ValueAt (Register register) ->
-                      jmp register
-                    ValueAt (Stack offset) ->
-                      jmp Mem{base = Rbp, offset}
-                    Address symbol ->
-                      jmp symbol
-                ]
-
-              emitLabel
-              freeKills var
-
-              {- At this point, the callee should have cleaned up. It will have:
-
-              1. Popped all stack function arguments popped
-              2. Popped caller's frame pointer to `%rbp`
-              3. Popped and jumped to return address
-
-              The following code is written under these assumptions.
-              -}
-              case Type.callingConventionOf retTy of
-                Type.Register -> do
-                  location <-
-                    if Rax `HashSet.member` registersAvailableAtCall || Rax `HashSet.member` registersKilledByCall
-                      then do
-                        modify (\s -> s{available = Seq.filter (/= Rax) s.available})
-                        pure $ Register Rax
-                      else do
-                        -- If the register was not available at the call site, then it was
-                        -- caller-saved. We have to move the result to a new register so we can
-                        -- restore the caller-saved register later.
-                        location <- allocLocation $ Type.sizeOf retTy
-                        emit
-                          [ case location of
-                              Register register -> mov Op2{src = Rax, dest = register}
-                              Stack offset -> mov Op2{src = Rax, dest = Mem{base = Rbp, offset}}
-                          ]
-                        pure location
-                  modify (\s -> s{locations = HashMap.insert var location s.locations})
-                Type.Composite{} ->
-                  error "TODO: composite return types"
-
-              for_ (Seq.reverse callerSavedRegisters) $ \register -> emit [pop register]
-            ty -> error $ "trying to call a non-function type: " <> show ty
+        Anf.Call function args ->
+          instSelectionCall_X86_64 var function args
         Anf.Binop op a b -> do
           let op' :: (Add X86_64 a b, Sub X86_64 a b) => Op2 a b -> Instruction X86_64
               op' =
@@ -1506,12 +1434,20 @@ instSelectionExpr_X86_64 varSizes expr =
               , mov Op2{src = Rax, dest = Mem{base = Rbp, offset = labelArgOffset}}
               , pop Rax
               ]
-            (Address symbol, Register labelArgRegister) -> do
+            (AddressOf (Metis.InstSelection.Symbol symbol), Register labelArgRegister) -> do
               [mov Op2{src = imm symbol, dest = labelArgRegister}]
-            (Address symbol, Stack labelArgOffset) ->
+            (AddressOf (Metis.InstSelection.Symbol symbol), Stack labelArgOffset) ->
               [mov Op2{src = imm symbol, dest = Mem{base = Rbp, offset = labelArgOffset}}]
+            (AddressOf (Memory mem), Register labelArgRegister) -> do
+              [lea Op2{src = mem, dest = labelArgRegister}]
+            (AddressOf (Memory mem), Stack labelArgOffset) ->
+              [ push Rax
+              , lea Op2{src = mem, dest = Rax}
+              , mov Op2{src = Rax, dest = Mem{base = Rbp, offset = labelArgOffset}}
+              , pop Rax
+              ]
 
-      emit [jmp $ Symbol . Text.pack $ "block_" <> show label.value]
+      emit [jmp $ Metis.Isa.Symbol . Text.pack $ "block_" <> show label.value]
       pure undefined -- TODO: How do I remove this undefined? Some tweak to the ANF representation?
     Anf.Label label arg rest -> do
       Log.trace "block"
@@ -1529,3 +1465,197 @@ instSelectionExpr_X86_64 varSizes expr =
         )
 
       instSelectionExpr_X86_64 varSizes rest
+
+data ClassifiedArguments isa = ClassifiedArguments
+  { typeArgs :: [(Value isa, Kind)]
+  , args :: [(Value isa, Type Anf.Var, Type Anf.Var)]
+  , retTy :: Type Anf.Var
+  }
+
+classifyArguments ::
+  (Isa isa) =>
+  (Anf.Var -> Kind) ->
+  (Text -> Type Anf.Var) ->
+  (Anf.Var -> Type Anf.Var) ->
+  Type Anf.Var ->
+  [(Anf.Simple, Value isa)] ->
+  ClassifiedArguments isa
+classifyArguments varKinds nameTys varTys ty args =
+  case ty of
+    Type.Forall tyVars body ->
+      let
+        (usedArgs, args') = splitAt (length tyVars) args
+        usedTypeArgs =
+          fmap
+            ( \(simple, _location) ->
+                case simple of
+                  Anf.Type tyArg -> tyArg
+                  arg -> error $ "expected type argument, got " <> show arg
+            )
+            usedArgs
+        result = classifyArguments varKinds nameTys varTys (instantiate (\index -> usedTypeArgs !! fromIntegral @Word64 @Int index) body) args'
+       in
+        result{typeArgs = zipWith (\(_, location) (_, argTy) -> (location, argTy)) usedArgs tyVars <> result.typeArgs}
+    Type.Fn argTys retTy ->
+      if length argTys /= length args
+        then
+          error $
+            "incorrect number of arguments supplied to function. expected "
+              <> show (length argTys)
+              <> ", got "
+              <> show (length args)
+              <> "("
+              <> show args
+              <> ")"
+        else
+          ClassifiedArguments
+            { typeArgs = []
+            , args =
+                zipWith
+                  ( \(simple, location) expectedArgTy ->
+                      ( location
+                      , expectedArgTy
+                      , either
+                          (error . ("expected type, got kind: " <>) . show)
+                          id
+                          (Anf.typeOf varKinds nameTys varTys simple)
+                      )
+                  )
+                  args
+                  argTys
+            , retTy
+            }
+    _ ->
+      ClassifiedArguments{typeArgs = [], args = [], retTy = ty}
+
+instSelectionCall_X86_64 ::
+  (MonadState (InstSelectionState X86_64) m, MonadReader (InstSelectionEnv X86_64) m, MonadLog m) =>
+  Anf.Var ->
+  Anf.Simple ->
+  [Anf.Simple] ->
+  m ()
+instSelectionCall_X86_64 var function args = do
+  functionLocation <- instSelectionSimple_X86_64 function
+  argLocations <- traverse instSelectionSimple_X86_64 args
+
+  varKinds <- asks (.varKinds)
+  nameTys <- asks (.nameTys)
+  varTys <- asks (.varTys)
+  case Anf.typeOf varKinds nameTys varTys function of
+    Right ty -> do
+      let ClassifiedArguments{typeArgs, args = valueArgs, retTy} = classifyArguments varKinds nameTys varTys ty (zip args argLocations)
+
+      registersAvailableAtCall <- collectL' @(HashSet _) <$> gets (.available)
+      registersKilledByCall <- do
+        liveness <- lookupLiveness var
+        HashSet.fromList
+          <$> wither
+            ( \killedVar -> do
+                location <- lookupLocation killedVar
+                case location of
+                  Register register -> pure $ Just register
+                  Stack{} -> pure Nothing
+            )
+            (HashSet.toList liveness.kills)
+      let registersUsedByFunction =
+            getRegistersUsedByFunction
+              (generalPurposeRegisters @X86_64)
+              (fmap snd typeArgs)
+              (fmap (\(_, x, _) -> x) valueArgs)
+              retTy
+
+      callerSavedRegisters <-
+        forMaybe (generalPurposeRegisters @X86_64) $ \register ->
+          if not (register `HashSet.member` registersAvailableAtCall)
+            && not (register `HashSet.member` registersKilledByCall)
+            && register `HashSet.member` registersUsedByFunction
+            then Just register <$ emit [push register]
+            else pure Nothing
+
+      (label, emitLabel) <- declareLabel "after"
+      emit [push (imm label)]
+
+      functionArguments <-
+        setupFunctionArguments
+          (generalPurposeRegisters @X86_64)
+          typeArgs
+          valueArgs
+
+      emit =<< moveRegisterFunctionArguments mempty functionArguments.registerFunctionArguments
+
+      for_ (reverse functionArguments.stackFunctionArguments) $ \StackFunctionArgument{src, dest = _} -> do
+        available <- gets (.available)
+        emit $
+          case src of
+            ValueAt (Register register) ->
+              [push register]
+            ValueAt (Stack offset) ->
+              [push Mem{base = Rbp, offset}]
+            AddressOf (Metis.InstSelection.Symbol symbol) ->
+              [push (imm symbol)]
+            AddressOf (Memory mem) ->
+              case Seq.viewl available of
+                Seq.EmptyL ->
+                  [ sub Op2{src = imm (8 :: Word64), dest = Rsp}
+                  , push Rax
+                  , lea Op2{src = mem, dest = Rax}
+                  , mov Op2{src = Rax, dest = Mem{base = Rsp, offset = 8}}
+                  , pop Rax
+                  ]
+                register Seq.:< _ ->
+                  [lea Op2{src = mem, dest = register}, push register]
+
+      emit [push Rbp]
+      emit [mov Op2{src = Rsp, dest = Rbp}]
+
+      available <- gets (.available)
+      emit $
+        case functionLocation of
+          ValueAt (Register register) ->
+            [jmp register]
+          ValueAt (Stack offset) ->
+            [jmp Mem{base = Rbp, offset}]
+          AddressOf (Metis.InstSelection.Symbol symbol) ->
+            [jmp symbol]
+          AddressOf (Memory mem) ->
+            case Seq.viewl available of
+              Seq.EmptyL ->
+                error "TODO: jump to address of memory when no registers available"
+              register Seq.:< _ ->
+                [lea Op2{src = mem, dest = register}, jmp register]
+
+      emitLabel
+      freeKills var
+
+      {- At this point, the callee should have cleaned up. It will have:
+
+      1. Popped all stack function arguments popped
+      2. Popped caller's frame pointer to `%rbp`
+      3. Popped and jumped to return address
+
+      The following code is written under these assumptions.
+      -}
+      case Type.callingConventionOf retTy of
+        Type.Register -> do
+          location <-
+            if Rax `HashSet.member` registersAvailableAtCall || Rax `HashSet.member` registersKilledByCall
+              then do
+                modify (\s -> s{available = Seq.filter (/= Rax) s.available})
+                pure $ Register Rax
+              else do
+                -- If the register was not available at the call site, then it was
+                -- caller-saved. We have to move the result to a new register so we can
+                -- restore the caller-saved register later.
+                location <- allocLocation $ Type.sizeOf retTy
+                emit
+                  [ case location of
+                      Register register -> mov Op2{src = Rax, dest = register}
+                      Stack offset -> mov Op2{src = Rax, dest = Mem{base = Rbp, offset}}
+                  ]
+                pure location
+          modify (\s -> s{locations = HashMap.insert var location s.locations})
+        Type.Composite{} ->
+          error "TODO: composite return types"
+
+      for_ (Seq.reverse callerSavedRegisters) $ \register -> emit [pop register]
+    ty -> error $ "trying to call a non-function type: " <> show ty

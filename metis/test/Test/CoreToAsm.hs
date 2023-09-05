@@ -454,7 +454,7 @@ spec =
         }
     , TestCase
         { title = "fn id @(a : Type) (x : a) : a = x; fn main() = let x = id @Uint64 99; x + 1"
-        , enabled = False
+        , enabled = True
         , definitions =
             [ Function
                 { name = "id"
@@ -466,7 +466,7 @@ spec =
             ]
         , expr =
             Let Type.Uint64 (Just "x") Type.Uint64 (Call Type.Uint64 (Name "id") [Type.Uint64] [Literal $ Literal.Uint64 99]) . toScope $
-              Var (B ())
+              Add Type.Uint64 (Var (B ())) (Literal $ Literal.Uint64 1)
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
             let
@@ -484,25 +484,21 @@ spec =
                   "mov (%rbx), %rdx"
                 , "mov %rdx, (%rcx)"
                 , -- return
-                  "pop %rbp"
+                  "mov %rcx, %rax"
+                , "pop %rbp"
                 , "ret"
                 ]
 
               fnId =
                 [ "id:" -- (a : Type, x : a) -> a
-                , {-
-                  id(%a : *Type, %x : *Unknown):
-                  %0 = copy(%a, %x)
-                  ret %0
-                  -}
-                  -- `a : Type` is in `rax`
+                , -- `a : Type` is in `rax`
                   -- `x : a` is in `rbx`
                   -- result destination is in `rcx`
-                  "mov 8(%rax), %rdx" -- load the `copy` function pointer
                   -- begin: call `copy`
-                , "push $after"
+                  "push $after"
                 , "push %rbp"
                 , "mov %rsp, %rbp"
+                , "mov 8(%rax), %rdx" -- load the `copy` function pointer
                 , "jmp *%rdx"
                 , -- end: call `copy`
                   "after:"
@@ -513,20 +509,12 @@ spec =
                 ]
 
               fnMain =
-                [ {-
-                  %0 = alloca(Uint64)
-                  store(%0, 99)
-                  %1 = f(&type_Uint64, %0)
-                  %2 = load(%0)
-                  %3 = %2 + 1
-                  %3
-                  -}
-                  "main:"
+                [ "main:"
                 , "mov %rsp, %rbp"
                 , "sub $16, %rsp" -- allocate locals
                 , "mov $99, -8(%rbp)"
                 , -- set up arguments
-                  "lea type_Uint64, %rax" -- address of Uint64 type dictionary
+                  "mov $type_Uint64, %rax" -- address of Uint64 type dictionary
                 , "lea -8(%rbp), %rbx" -- argument passed via stack
                 , "lea -16(%rbp), %rcx" -- result passed via stack
                 , -- begin: call `id`

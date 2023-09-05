@@ -36,7 +36,7 @@ import qualified Metis.Asm.Builder as Asm (runAsmBuilderT)
 import qualified Metis.Asm.Class as Asm (block, string)
 import Metis.Codegen (printInstruction_X86_64)
 import qualified Metis.Core as Core
-import Metis.InstSelection (Location (..), Value (..), instSelectionFunction_X86_64, instSelection_X86_64)
+import Metis.InstSelection (Address (..), Location (..), Value (..), instSelectionFunction_X86_64, instSelection_X86_64)
 import Metis.Isa (Memory (..), Op2 (..), Symbol (..), call, generalPurposeRegisters, imm, lea, mov, xor)
 import Metis.Isa.X86_64 (Register (..), X86_64)
 import qualified Metis.Liveness as Liveness
@@ -190,11 +190,12 @@ compile buildDir definitions expr outPath = do
             , case resultValue of
                 ValueAt (Register register) -> mov Op2{src = register, dest = Rsi}
                 ValueAt (Stack offset) -> mov Op2{src = Mem{base = Rbp, offset}, dest = Rsi}
-                Address symbol -> mov Op2{src = imm symbol, dest = Rsi}
+                AddressOf (Metis.InstSelection.Symbol symbol) -> mov Op2{src = imm symbol, dest = Rsi}
+                AddressOf (Memory mem) -> lea Op2{src = mem, dest = Rsi}
             , xor Op2{src = Rax, dest = Rax}
-            , call (Symbol "printf")
+            , call (Metis.Isa.Symbol "printf")
             , mov Op2{src = imm (0 :: Word64), dest = Rdi}
-            , call (Symbol "exit")
+            , call (Metis.Isa.Symbol "exit")
             ]
         )
     pure ()
