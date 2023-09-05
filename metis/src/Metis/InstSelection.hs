@@ -766,7 +766,6 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
   let initial = initialInstSelectionState initialAvailable liveness function.name []
   rec let localsSize = fromIntegral @Int64 @Word64 (-s'.nextStackOffset)
       ((), s') <- runInstSelectionT nameTys function.bodyInfo initial $ do
-        -- TODO: set up type arguments
         stackArgumentsSize <- setupArguments function.tyArgs function.args
         emit [sub Op2{dest = Rsp, src = imm localsSize} | localsSize > 0]
         -- TODO: something for values that are returned via stack
