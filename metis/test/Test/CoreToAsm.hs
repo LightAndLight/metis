@@ -429,11 +429,11 @@ spec =
                   -- rax <- a
                   -- rbx <- x
                   -- rcx <- out
-                  "mov 8(%rax), %rdx" -- load the `copy` function pointer
                   -- begin: call `copy`
-                , "push $after"
+                  "push $after"
                 , "push %rbp"
                 , "mov %rsp, %rbp"
+                , "mov 8(%rax), %rdx" -- load the `copy` function pointer
                 , "jmp *%rdx"
                 , -- end: call `copy`
                   "after:"

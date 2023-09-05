@@ -706,6 +706,7 @@ generateTypeDict name ty =
         Asm.block "Type_Uint64_copy" [] . fmap Instruction $
           [ mov Op2{src = Mem{base = Rbx, offset = 0}, dest = Rdx}
           , mov Op2{src = Rdx, dest = Mem{base = Rcx, offset = 0}}
+          , mov Op2{src = Rcx, dest = Rax}
           , pop Rbp
           , ret ()
           ]
@@ -719,6 +720,7 @@ generateTypeDict name ty =
         Asm.block "Type_Bool_copy" [] . fmap Instruction $
           [ movzbq Op2{src = Mem{base = Rbx, offset = 0}, dest = Rdx}
           , movb Op2{src = Dl, dest = Mem{base = Rcx, offset = 0}}
+          , mov Op2{src = Rcx, dest = Rax}
           , pop Rbp
           , ret ()
           ]
@@ -732,6 +734,7 @@ generateTypeDict name ty =
         Asm.block "Type_Fn_copy" [] . fmap Instruction $
           [ mov Op2{src = Mem{base = Rbx, offset = 0}, dest = Rdx}
           , mov Op2{src = Rdx, dest = Mem{base = Rcx, offset = 0}}
+          , mov Op2{src = Rcx, dest = Rax}
           , pop Rbp
           , ret ()
           ]
@@ -745,6 +748,7 @@ generateTypeDict name ty =
         Asm.block "Type_Forall_copy" [] . fmap Instruction $
           [ mov Op2{src = Mem{base = Rbx, offset = 0}, dest = Rdx}
           , mov Op2{src = Rdx, dest = Mem{base = Rcx, offset = 0}}
+          , mov Op2{src = Rcx, dest = Rax}
           , pop Rbp
           , ret ()
           ]
@@ -754,6 +758,187 @@ generateTypeDict name ty =
         [ Directive $ Asm.quad (8 :: Word64)
         , Directive $ Asm.quad copy
         ]
+
+-- | Store an 8-byte value in the pointer held by a location.
+storeq :: (MonadState (InstSelectionState X86_64) m) => Value X86_64 -> Location X86_64 -> m ()
+storeq value destination = do
+  available <- gets (.available)
+  emit $
+    case value of
+      ValueAt (Register register) ->
+        case destination of
+          Register destinationRegister ->
+            [mov Op2{src = register, dest = Mem{base = destinationRegister, offset = 0}}]
+          Stack destinationOffset ->
+            case Seq.viewl available of
+              Seq.EmptyL ->
+                let destinationRegister = Rax
+                 in [ push destinationRegister
+                    , -- load pointer from memory
+                      mov Op2{src = Mem{base = Rbp, offset = destinationOffset}, dest = destinationRegister}
+                    , -- store value to pointer
+                      mov Op2{src = register, dest = Mem{base = destinationRegister, offset = 0}}
+                    , pop destinationRegister
+                    ]
+              destinationRegister Seq.:< _ ->
+                [ -- load pointer from memory
+                  mov Op2{src = Mem{base = Rbp, offset = destinationOffset}, dest = destinationRegister}
+                , -- store value to pointer
+                  mov Op2{src = register, dest = Mem{base = destinationRegister, offset = 0}}
+                ]
+      ValueAt (Stack offset) ->
+        case destination of
+          Register destinationRegister ->
+            case Seq.viewl available of
+              Seq.EmptyL ->
+                let register = Rax
+                 in [ push register
+                    , -- load value from memory
+                      mov Op2{src = Mem{base = Rbp, offset}, dest = register}
+                    , -- store value to pointer
+                      mov Op2{src = register, dest = Mem{base = destinationRegister, offset = 0}}
+                    , pop register
+                    ]
+              register Seq.:< _ ->
+                [ -- load value from memory
+                  mov Op2{src = Mem{base = Rbp, offset}, dest = register}
+                , -- store value to pointer
+                  mov Op2{src = register, dest = Mem{base = destinationRegister, offset = 0}}
+                ]
+          Stack destinationOffset ->
+            case Seq.viewl available of
+              Seq.EmptyL ->
+                let register = Rax
+                    destinationRegister = Rbx
+                 in [ push register
+                    , push destinationRegister
+                    , -- load value from memory
+                      mov Op2{src = Mem{base = Rbp, offset}, dest = register}
+                    , -- load pointer from memory
+                      mov Op2{src = Mem{base = Rbp, offset = destinationOffset}, dest = destinationRegister}
+                    , -- store value to pointer
+                      mov Op2{src = register, dest = Mem{base = destinationRegister, offset = 0}}
+                    , pop destinationRegister
+                    , pop register
+                    ]
+              register Seq.:< available' ->
+                case Seq.viewl available' of
+                  Seq.EmptyL ->
+                    let destinationRegister = Rax
+                     in [ push destinationRegister
+                        , -- load value from memory
+                          mov Op2{src = Mem{base = Rbp, offset}, dest = register}
+                        , -- load pointer from memory
+                          mov Op2{src = Mem{base = Rbp, offset = destinationOffset}, dest = destinationRegister}
+                        , -- store value to pointer
+                          mov Op2{src = register, dest = Mem{base = destinationRegister, offset = 0}}
+                        , pop destinationRegister
+                        ]
+                  destinationRegister Seq.:< _ ->
+                    [ -- load value from memory
+                      mov Op2{src = Mem{base = Rbp, offset}, dest = register}
+                    , -- load pointer from memory
+                      mov Op2{src = Mem{base = Rbp, offset = destinationOffset}, dest = destinationRegister}
+                    , -- store value to pointer
+                      mov Op2{src = register, dest = Mem{base = destinationRegister, offset = 0}}
+                    ]
+      Address label ->
+        case destination of
+          Register destinationRegister ->
+            [mov Op2{src = imm label, dest = Mem{base = destinationRegister, offset = 0}}]
+          Stack destinationOffset ->
+            case Seq.viewl available of
+              Seq.EmptyL ->
+                let destinationRegister = Rax
+                 in [ push destinationRegister
+                    , -- load pointer from memory
+                      mov Op2{src = Mem{base = Rbp, offset = destinationOffset}, dest = destinationRegister}
+                    , -- store value to pointer
+                      mov Op2{src = imm label, dest = Mem{base = destinationRegister, offset = 0}}
+                    , pop destinationRegister
+                    ]
+              destinationRegister Seq.:< _ ->
+                [ -- load pointer from memory
+                  mov Op2{src = Mem{base = Rbp, offset = destinationOffset}, dest = destinationRegister}
+                , -- store value to pointer
+                  mov Op2{src = imm label, dest = Mem{base = destinationRegister, offset = 0}}
+                ]
+
+copyValue ::
+  (MonadState (InstSelectionState X86_64) m) =>
+  -- | The type of the value that's being copied.
+  Type Anf.Var ->
+  -- | The source value.
+  Value X86_64 ->
+  -- | Contains a pointer into which we should copy the source value.
+  Location X86_64 ->
+  m (Location X86_64)
+copyValue ty value outputLocation =
+  case ty of
+    Type.Var var -> do
+      -- When working with a type variable, `value` is a pointer. We use the type
+      -- variable's type dictionary to copy the contents of the pointer to the destination.
+      varLocation <- lookupLocation var
+
+      (after, emitAfter) <- declareLabel "after"
+      emit [push (imm after)]
+
+      -- TODO: this does not save call-clobbered registers. it's currently safe because it's only
+      -- used when a function is returning, and no registers are by a function after its return
+      -- instruction.
+
+      emit $
+        case varLocation of
+          Register register ->
+            [mov Op2{src = register, dest = Rax} | register /= Rax]
+          Stack offset ->
+            [mov Op2{src = Mem{base = Rbp, offset}, dest = Rax}]
+      emit $
+        case value of
+          ValueAt (Register register) ->
+            [mov Op2{src = register, dest = Rbx} | register /= Rbx]
+          ValueAt (Stack offset) ->
+            [mov Op2{src = Mem{base = Rbp, offset}, dest = Rbx}]
+          Address label ->
+            [mov Op2{src = imm label, dest = Rbx}]
+
+      emit $
+        case outputLocation of
+          Register register ->
+            [mov Op2{src = register, dest = Rcx} | register /= Rcx]
+          Stack offset ->
+            [mov Op2{src = Mem{base = Rbp, offset}, dest = Rcx}]
+      emit
+        [ push Rbp
+        , mov Op2{src = Rsp, dest = Rbp}
+        , mov
+            Op2
+              { src =
+                  Mem
+                    { base = Rax
+                    , -- offset of `copy` function
+                      offset = 8
+                    }
+              , dest = Rdx
+              }
+        , jmp Rdx
+        ]
+
+      emitAfter
+
+      -- The type copy functions return the output pointer in `rax`.
+      pure $ Register Rax
+    Type.Bool ->
+      error "TODO: storeb value outputLocation" value outputLocation
+    Type.Uint64 -> do
+      storeq value outputLocation
+      pure outputLocation
+    Type.Fn{} -> do
+      storeq value outputLocation
+      pure outputLocation
+    Type.Forall{} -> do
+      storeq value outputLocation
+      pure outputLocation
 
 instSelectionFunction_X86_64 ::
   (MonadAsm X86_64 m, MonadLog m, MonadFix m) =>
@@ -766,21 +951,33 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
   let initial = initialInstSelectionState initialAvailable liveness function.name []
   rec let localsSize = fromIntegral @Int64 @Word64 (-s'.nextStackOffset)
       ((), s') <- runInstSelectionT nameTys function.bodyInfo initial $ do
-        stackArgumentsSize <- setupArguments function.tyArgs function.args
+        (stackArgumentsSize, mOutputLocation) <- setupArguments function.tyArgs function.args function.retTy
         emit [sub Op2{dest = Rsp, src = imm localsSize} | localsSize > 0]
-        -- TODO: something for values that are returned via stack
         value <- instSelectionExpr_X86_64 mempty function.body
-        case Type.callingConventionOf function.retTy of
-          Type.Register ->
+        case mOutputLocation of
+          Just outputLocation -> do
+            -- `outputLocation` is a function argument containing a pointer to (caller-allocated)
+            -- memory where the function's result should be saved. It's used when a function needs
+            -- to return a value via the stack instead of a register.
+            value' <- copyValue function.retTy value outputLocation
             emit $
-              case value of
-                ValueAt (Register register) ->
+              case value' of
+                Register register ->
                   [mov Op2{src = register, dest = Rax} | register /= Rax]
-                ValueAt (Stack offset) ->
+                Stack offset ->
                   [mov Op2{src = Mem{base = Rbp, offset}, dest = Rax}]
-                Address label ->
-                  [mov Op2{src = imm label, dest = Rax}]
-          Type.Composite{} -> error "TODO: composite return values"
+          Nothing ->
+            case Type.callingConventionOf function.retTy of
+              Type.Register ->
+                emit $
+                  case value of
+                    ValueAt (Register register) ->
+                      [mov Op2{src = register, dest = Rax} | register /= Rax]
+                    ValueAt (Stack offset) ->
+                      [mov Op2{src = Mem{base = Rbp, offset}, dest = Rax}]
+                    Address label ->
+                      [mov Op2{src = imm label, dest = Rax}]
+              Type.Composite{} -> error "TODO: composite return values"
         emit $
           [add Op2{dest = Rsp, src = imm localsSize} | localsSize > 0]
             <> [pop Rbp]
@@ -804,14 +1001,14 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
 
   pure ()
   where
-    {- TODO: this code is basically the same as `setupFunctionArguments`. Make it the same code?
-    -}
+    -- TODO: this code is basically the same as `setupFunctionArguments`. Make it the same code?
     setupArguments ::
       (MonadState (InstSelectionState isa) m) =>
       [(Anf.Var, Kind)] ->
       [(Anf.Var, Type Anf.Var)] ->
-      m Word64
-    setupArguments tyArgs args =
+      Type Anf.Var ->
+      m (Word64, Maybe (Location isa))
+    setupArguments tyArgs args retTy =
       case tyArgs of
         tyArg : tyArgs' -> do
           available <- gets (.available)
@@ -824,16 +1021,33 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
                       , locations = HashMap.insert (fst tyArg) (Register register) s.locations
                       }
                 )
-              setupArguments tyArgs' args
+              setupArguments tyArgs' args retTy
             Seq.EmptyL ->
               setupStackArguments
                 (fromIntegral @Word64 @Int64 Type.pointerSize)
                 0
                 tyArgs
                 args
+                retTy
         [] ->
           case args of
-            [] -> pure 0
+            [] -> do
+              case retTy of
+                Type.Var{} -> do
+                  available <- gets (.available)
+                  case Seq.viewl available of
+                    register Seq.:< available' -> do
+                      modify (\s -> s{available = available'})
+                      pure (0, Just $ Register register)
+                    Seq.EmptyL ->
+                      setupStackArguments
+                        (fromIntegral @Word64 @Int64 Type.pointerSize)
+                        0
+                        tyArgs
+                        args
+                        retTy
+                _ ->
+                  pure (0, Nothing)
             arg : args' -> do
               case Type.callingConventionOf $ snd arg of
                 Type.Register -> do
@@ -847,13 +1061,14 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
                               , locations = HashMap.insert (fst arg) (Register register) s.locations
                               }
                         )
-                      setupArguments tyArgs args'
+                      setupArguments tyArgs args' retTy
                     Seq.EmptyL ->
                       setupStackArguments
                         (fromIntegral @Word64 @Int64 Type.pointerSize)
                         0
                         tyArgs
                         args -- we couldn't allocate register for `arg`, so try again with the stack
+                        retTy
                 Type.Composite{} ->
                   error "TODO: composite function arguments"
 
@@ -863,8 +1078,9 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
       Word64 ->
       [(Anf.Var, Kind)] ->
       [(Anf.Var, Type Anf.Var)] ->
-      m Word64
-    setupStackArguments offset size tyArgs args =
+      Type Anf.Var ->
+      m (Word64, Maybe (Location isa))
+    setupStackArguments offset size tyArgs args retTy =
       case tyArgs of
         (tyArgVar, _tyArgKind) : tyArgs' -> do
           modify (\s -> s{locations = HashMap.insert tyArgVar (Stack offset) s.locations})
@@ -874,9 +1090,15 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
             (size + tyArgSize)
             tyArgs'
             args
+            retTy
         [] ->
           case args of
-            [] -> pure size
+            [] -> do
+              case retTy of
+                Type.Var{} ->
+                  pure (size + Type.pointerSize, Just $ Stack offset)
+                _ ->
+                  pure (size, Nothing)
             (argVar, argTy) : args' ->
               case Type.callingConventionOf argTy of
                 Type.Register -> do
@@ -887,6 +1109,7 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
                     (size + argTySize)
                     tyArgs
                     args'
+                    retTy
                 Type.Composite{} -> error "TODO: composite stack function arguments"
 
 data ClassifiedArguments isa = ClassifiedArguments
