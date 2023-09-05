@@ -410,69 +410,81 @@ spec =
               Var (B ())
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
-            [ ".data"
-            , -- begin: Uint64 type dictionary
-              "type_Uint64:"
-            , ".quad 8"
-            , ".quad Type_Uint64_copy"
-            , -- end: Uint64 type dictionary
-              ".text"
-            , -- begin: Uint64 copy
-              "Type_Uint64_copy:"
-            , -- rax: self
-              -- rbx: from (pointer)
-              -- rcx: to (pointer)
-              "mov (%rbx), %rdx"
-            , "mov %rdx, (%rcx)"
-            , -- return
-              "pop %rbp"
-            , "ret"
-            , -- end: Uint64 copy
-              "id:" -- (a : Type, x : a) -> a
-            , {-
-              id(%a : *Type, %x : *Unknown):
-              %0 = copy(%a, %x)
-              ret %0
-              -}
-              -- `a : Type` is in `rax`
-              -- `x : a` is in `rbx`
-              -- result destination is in `rcx`
-              "mov 8(%rax), %rdx" -- load the `copy` function pointer
-              -- begin: call `copy`
-            , "push $after"
-            , "push %rbp"
-            , "mov %rsp, %rbp"
-            , "jmp *%rdx"
-            , -- end: call `copy`
-              "after:"
-            , -- return
-              -- return value is already in `rax`
-              "pop %rbp"
-            , "ret"
-            , {-
-              %0 = alloca(Uint64)
-              store(%0, 99)
-              %1 = f(&type_Uint64, %0)
-              %2 = load(%0)
-              %3 = %2 + 1
-              %3
-              -}
-              "main:"
-            , "mov %rsp, %rbp"
-            , "sub $16, %rsp" -- allocate locals
-            , "mov $99, -8(%rbp)"
-            , -- set up arguments
-              "lea type_Uint64, %rax" -- address of Uint64 type dictionary
-            , "lea -8(%rbp), %rbx" -- argument passed via stack
-            , "lea -16(%rbp), %rcx" -- result passed via stack
-            , -- begin: call `id`
-              "push $after"
-            , "push %rbp"
-            , "mov %rsp, %rbp"
-            , "jmp id"
-            , -- end: call `id`
-              "after:"
-            , "add $1, (%rax)"
-            ]
+            let
+              typeDictUint64 =
+                [ "type_Uint64:"
+                , ".quad 8"
+                , ".quad Type_Uint64_copy"
+                ]
+
+              copyUint64 =
+                [ "Type_Uint64_copy:"
+                , -- rax: self
+                  -- rbx: from (pointer)
+                  -- rcx: to (pointer)
+                  "mov (%rbx), %rdx"
+                , "mov %rdx, (%rcx)"
+                , -- return
+                  "pop %rbp"
+                , "ret"
+                ]
+
+              fnId =
+                [ "id:" -- (a : Type, x : a) -> a
+                , {-
+                  id(%a : *Type, %x : *Unknown):
+                  %0 = copy(%a, %x)
+                  ret %0
+                  -}
+                  -- `a : Type` is in `rax`
+                  -- `x : a` is in `rbx`
+                  -- result destination is in `rcx`
+                  "mov 8(%rax), %rdx" -- load the `copy` function pointer
+                  -- begin: call `copy`
+                , "push $after"
+                , "push %rbp"
+                , "mov %rsp, %rbp"
+                , "jmp *%rdx"
+                , -- end: call `copy`
+                  "after:"
+                , -- return
+                  -- return value is already in `rax`
+                  "pop %rbp"
+                , "ret"
+                ]
+
+              fnMain =
+                [ {-
+                  %0 = alloca(Uint64)
+                  store(%0, 99)
+                  %1 = f(&type_Uint64, %0)
+                  %2 = load(%0)
+                  %3 = %2 + 1
+                  %3
+                  -}
+                  "main:"
+                , "mov %rsp, %rbp"
+                , "sub $16, %rsp" -- allocate locals
+                , "mov $99, -8(%rbp)"
+                , -- set up arguments
+                  "lea type_Uint64, %rax" -- address of Uint64 type dictionary
+                , "lea -8(%rbp), %rbx" -- argument passed via stack
+                , "lea -16(%rbp), %rcx" -- result passed via stack
+                , -- begin: call `id`
+                  "push $after"
+                , "push %rbp"
+                , "mov %rsp, %rbp"
+                , "jmp id"
+                , -- end: call `id`
+                  "after:"
+                , "add $1, (%rax)"
+                ]
+             in
+              [".data"]
+                <> typeDictUint64
+                <> [".text"]
+                <> fnId
+                <> copyUint64
+                <> fnMain
         }
     ]
