@@ -421,15 +421,14 @@ spec =
         , expectedOutput =
             let
               fnId =
-                [ "id:" -- (a : Type, x : a) -> a
-                , {-
-                  id(%a : *Type, %x : *Unknown):
-                  %0 = copy(%a, %x)
-                  ret %0
-                  -}
-                  -- `a : Type` is in `rax`
-                  -- `x : a` is in `rbx`
-                  -- result destination is in `rcx`
+                [ "id:"
+                , -- id : forall a. a -> a
+                  --
+                  -- In C: void id(Type* a, void* x, void* out)
+                  --
+                  -- rax <- a
+                  -- rbx <- x
+                  -- rcx <- out
                   "mov 8(%rax), %rdx" -- load the `copy` function pointer
                   -- begin: call `copy`
                 , "push $after"
