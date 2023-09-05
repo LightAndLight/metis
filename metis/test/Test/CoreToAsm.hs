@@ -410,12 +410,15 @@ spec =
               Var (B ())
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
-            [ ".text"
+            [ ".data"
             , -- begin: Uint64 type dictionary
               "type_Uint64:"
             , ".quad 8"
-            , ".quad type_Uint64_copy"
-            , "type_Uint64_copy:"
+            , ".quad Type_Uint64_copy"
+            , -- end: Uint64 type dictionary
+              ".text"
+            , -- begin: Uint64 copy
+              "Type_Uint64_copy:"
             , -- rax: self
               -- rbx: from (pointer)
               -- rcx: to (pointer)
@@ -425,7 +428,7 @@ spec =
               "mov %rcx, %rax"
             , "pop %rbp"
             , "ret"
-            , -- end: Uint64 type dictionary
+            , -- end: Uint64 copy
               "id:" -- (a : Type, x : a) -> a
             , {-
               id(%a : *Type, %x : *Unknown):

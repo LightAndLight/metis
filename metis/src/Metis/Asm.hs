@@ -84,13 +84,11 @@ printAsm printInstruction asm =
         then []
         else
           [".data"]
-            <> fmap
-              ( \DataEntry{label, content} ->
-                  Builder.fromText label
-                    <> ":\n"
-                    <> foldMap ((<> "\n") . printDirective) content
-              )
-              asm.data_
+            <> ( asm.data_
+                  >>= \DataEntry{label, content} ->
+                    [Builder.fromText label <> ":"]
+                      <> fmap printDirective content
+               )
     )
       <> [".text"]
       <> ( asm.text >>= \Block{label, attributes, statements} ->

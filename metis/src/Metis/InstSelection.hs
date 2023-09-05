@@ -709,11 +709,10 @@ generateTypeDict name ty =
           , pop Rbp
           , ret ()
           ]
-      Asm.block
+      Asm.struct
         name.value
-        []
-        [ Directive $ Asm.quad (8 :: Word64)
-        , Directive $ Asm.quad copy
+        [ Asm.quad (8 :: Word64)
+        , Asm.quad copy
         ]
     Type.Bool -> do
       copy <-
@@ -723,11 +722,10 @@ generateTypeDict name ty =
           , pop Rbp
           , ret ()
           ]
-      Asm.block
+      Asm.struct
         name.value
-        []
-        [ Directive $ Asm.quad (1 :: Word64)
-        , Directive $ Asm.quad copy
+        [ Asm.quad (1 :: Word64)
+        , Asm.quad copy
         ]
     Type.Fn{} -> do
       copy <-
@@ -737,11 +735,10 @@ generateTypeDict name ty =
           , pop Rbp
           , ret ()
           ]
-      Asm.block
+      Asm.struct
         name.value
-        []
-        [ Directive $ Asm.quad (8 :: Word64)
-        , Directive $ Asm.quad copy
+        [ Asm.quad (8 :: Word64)
+        , Asm.quad copy
         ]
     Type.Forall{} -> do
       copy <-
