@@ -28,7 +28,7 @@ printImmediate imm =
 
 printMemory :: (Isa isa) => Memory isa -> Builder
 printMemory Mem{base, offset} =
-  (if offset > 0 then Builder.fromString (show offset) else mempty)
+  (if offset /= 0 then Builder.fromString (show offset) else mempty)
     <> "("
     <> printRegister base
     <> ")"
