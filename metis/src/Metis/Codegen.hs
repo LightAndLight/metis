@@ -27,7 +27,11 @@ printImmediate imm =
     Label l -> Builder.fromText l.value
 
 printMemory :: (Isa isa) => Memory isa -> Builder
-printMemory Mem{base, offset} = Builder.fromString (show offset) <> "(" <> printRegister base <> ")"
+printMemory Mem{base, offset} =
+  (if offset > 0 then Builder.fromString (show offset) else mempty)
+    <> "("
+    <> printRegister base
+    <> ")"
 
 printSymbol :: Symbol -> Builder
 printSymbol sym = Builder.fromText sym.value
