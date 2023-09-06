@@ -1438,6 +1438,8 @@ instSelectionExpr_X86_64 varSizes expr =
           instSelectionStore_X86_64 var ptr val
         Anf.Load ptr ->
           instSelectionLoad_X86_64 var ptr
+        Anf.GetField ptr field ->
+          instSelectionGetField_X86_64 var ptr field
 
       instSelectionExpr_X86_64 varSizes rest
     Anf.IfThenElse cond then_ else_ rest -> do
@@ -2127,3 +2129,12 @@ instSelectionLoad_X86_64 var ptr = do
       error "TODO: Load/Forall"
     Type.Ptr{} -> do
       error "TODO: Load/Ptr"
+
+instSelectionGetField_X86_64 ::
+  (MonadState (InstSelectionState X86_64) m, MonadReader (InstSelectionEnv X86_64) m, MonadLog m) =>
+  Anf.Var ->
+  Anf.Simple ->
+  Text ->
+  m ()
+instSelectionGetField_X86_64 var ptr field =
+  error "TODO: GetField" var ptr field

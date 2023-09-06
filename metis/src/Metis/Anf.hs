@@ -80,6 +80,7 @@ data Compound
   | Alloca (Type Var)
   | Store Simple Simple
   | Load Simple
+  | GetField Simple Text
   deriving (Show, Eq)
 
 data Binop = Add | Subtract
@@ -356,5 +357,6 @@ fromCoreExpr nameTys toTyVar toVar expr =
         Type.Fn{} -> Mono
         Type.Forall{} -> Mono
         Type.Ptr{} -> Mono
+        Type.Unknown{} -> Mono
 
 data Polymorphism = Poly | Mono

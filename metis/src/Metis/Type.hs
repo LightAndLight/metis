@@ -25,6 +25,7 @@ import Data.Hashable.Lifted (Hashable1, hashWithSalt1)
 import Data.Text (Text)
 import Data.Word (Word64)
 import GHC.Generics (Generic, Generic1)
+import GHC.Stack (HasCallStack)
 import Metis.Kind (Kind)
 import qualified Metis.Kind as Kind
 
@@ -36,6 +37,7 @@ data Type a
   | Forall [(Text, Kind)] (Scope Word64 Type a)
   | Ptr (Type a)
   | Unit
+  | Unknown
   deriving (Functor, Foldable, Traversable, Generic, Generic1)
 
 deriveShow1 ''Type
@@ -55,6 +57,7 @@ instance Monad Type where
   Uint64 >>= _ = Uint64
   Bool >>= _ = Bool
   Unit >>= _ = Unit
+  Unknown >>= _ = Unknown
   Fn args ret >>= f = Fn (fmap (>>= f) args) (ret >>= f)
   Forall args body >>= f = Forall args (body >>>= f)
   Ptr a >>= f = Ptr (a >>= f)
@@ -62,7 +65,7 @@ instance Monad Type where
 pointerSize :: Word64
 pointerSize = 8 -- assumes 64 bit target architecture
 
-sizeOf :: Type a -> Word64
+sizeOf :: (HasCallStack) => Type a -> Word64
 sizeOf ty =
   case ty of
     Var{} -> pointerSize
@@ -72,13 +75,14 @@ sizeOf ty =
     Forall{} -> pointerSize
     Ptr{} -> pointerSize
     Unit -> 0
+    Unknown -> error "can't get size of Unknown"
 
 data CallingConvention
   = Register
   | Composite [CallingConvention]
   | Erased
 
-callingConventionOf :: Type a -> CallingConvention
+callingConventionOf :: (HasCallStack) => Type a -> CallingConvention
 callingConventionOf ty =
   case ty of
     Var{} -> Register
@@ -88,6 +92,7 @@ callingConventionOf ty =
     Forall{} -> Register
     Ptr{} -> Register
     Unit -> Erased
+    Unknown -> error "can't get calling convention of Unknown"
 
 kindOf :: (a -> Kind) -> Type a -> Kind
 kindOf varKind ty =
@@ -99,6 +104,7 @@ kindOf varKind ty =
     Forall{} -> Kind.Type
     Ptr{} -> Kind.Type
     Unit -> Kind.Type
+    Unknown -> Kind.Type
 
 forall_ :: [(Text, Kind)] -> Type Word64 -> Type a
 forall_ tyVars body =

@@ -168,16 +168,18 @@ spec =
         {-
         %0 : *Uint64 = alloca(Uint64)
         %1 : ()      = store(%0, 99)
-        %2 : *Uint64 = id(Uint64, %0)
-        %3 : Uint64  = load(%2)
-        ret %3
+        %2 : *Uint64 = alloca(Uint64)
+        %3 : *Uint64 = id(Uint64, %0, %2)
+        %4 : Uint64  = load(%3)
+        ret %4
         -}
         let anf =
               Anf.LetC (Anf.MkVar 0) (Type.Ptr Type.Uint64) (Anf.Alloca Type.Uint64) $
                 Anf.LetC (Anf.MkVar 1) Type.Unit (Anf.Store (Anf.Var $ Anf.MkVar 0) (Anf.Literal $ Literal.Uint64 99)) $
-                  Anf.LetC (Anf.MkVar 2) (Type.Ptr Type.Uint64) (Anf.Call (Anf.Name "id") [Anf.Type Type.Uint64, Anf.Var $ Anf.MkVar 0]) $
-                    Anf.LetC (Anf.MkVar 3) Type.Uint64 (Anf.Load (Anf.Var $ Anf.MkVar 2)) $
-                      Anf.Return (Anf.Var $ Anf.MkVar 3)
+                  Anf.LetC (Anf.MkVar 2) (Type.Ptr Type.Uint64) (Anf.Alloca Type.Uint64) $
+                    Anf.LetC (Anf.MkVar 3) (Type.Ptr Type.Uint64) (Anf.Call (Anf.Name "id") [Anf.Type Type.Uint64, Anf.Var $ Anf.MkVar 0, Anf.Var $ Anf.MkVar 2]) $
+                      Anf.LetC (Anf.MkVar 4) Type.Uint64 (Anf.Load (Anf.Var $ Anf.MkVar 3)) $
+                        Anf.Return (Anf.Var $ Anf.MkVar 4)
         ( [("id", Type.Forall [("a", Kind.Type)] . toScope $ Type.Fn [Type.Var $ B 0] (Type.Var $ B 0))]
           , core
           )
@@ -188,7 +190,7 @@ spec =
         anfShouldBe :: (HasCallStack) => Function -> Anf.Function -> IO ()
         anfShouldBe function expectation = Anf.fromFunction (const undefined) function `shouldBe` expectation
 
-      it "id @(a : Type) (x : a) = x" $ do
+      it "id @(a : Type) (x : a) : a = x" $ do
         Function
           { name = "id"
           , tyArgs = [("a", Kind.Type)]
@@ -199,13 +201,47 @@ spec =
           `anfShouldBe` Anf.Function
             { name = "id"
             , tyArgs = [(Anf.MkVar 0, Kind.Type)]
-            , args = [(Anf.MkVar 1, Type.Var (Anf.MkVar 0))]
-            , retTy = Type.Var (Anf.MkVar 0)
-            , body = Anf.Return $ Anf.Var (Anf.MkVar 1)
+            , args =
+                [ (Anf.MkVar 1, Type.Ptr $ Type.Var (Anf.MkVar 0))
+                , (Anf.MkVar 2, Type.Ptr $ Type.Var (Anf.MkVar 0))
+                ]
+            , retTy = Type.Ptr $ Type.Var (Anf.MkVar 0)
+            , body =
+                {-
+                %0 : *Type
+                %1 : *%0
+                %2 : *%0
+                ---
+                %3 : (*Type = %0, *%0) -> *%0 = %0.move
+                %4 : *%0 = %3(%0, %1, %2)
+                ret %4
+                -}
+                Anf.LetC
+                  (Anf.MkVar 3)
+                  (Type.Fn [Type.Ptr Type.Unknown, Type.Ptr $ Type.Var (Anf.MkVar 0), Type.Ptr $ Type.Var (Anf.MkVar 0)] (Type.Ptr $ Type.Var (Anf.MkVar 0)))
+                  (Anf.GetField (Anf.Var $ Anf.MkVar 0) "move")
+                  $ Anf.LetC
+                    (Anf.MkVar 4)
+                    (Type.Ptr $ Type.Var (Anf.MkVar 0))
+                    ( Anf.Call
+                        (Anf.Var $ Anf.MkVar 3)
+                        [Anf.Var $ Anf.MkVar 0, Anf.Var $ Anf.MkVar 1, Anf.Var $ Anf.MkVar 2]
+                    )
+                  $ Anf.Return (Anf.Var $ Anf.MkVar 4)
             , bodyInfo =
                 Anf.ExprInfo
                   { labelArgs = []
                   , varKinds = [(Anf.MkVar 0, Kind.Type)]
-                  , varTys = [(Anf.MkVar 1, Type.Var (Anf.MkVar 0))]
+                  , varTys =
+                      [ (Anf.MkVar 1, Type.Ptr $ Type.Var (Anf.MkVar 0))
+                      , (Anf.MkVar 2, Type.Ptr $ Type.Var (Anf.MkVar 0))
+                      ,
+                        ( Anf.MkVar 3
+                        , Type.Fn
+                            [Type.Ptr Type.Unknown, Type.Ptr $ Type.Var (Anf.MkVar 0), Type.Ptr $ Type.Var (Anf.MkVar 0)]
+                            (Type.Ptr $ Type.Var (Anf.MkVar 0))
+                        )
+                      , (Anf.MkVar 4, Type.Ptr $ Type.Var (Anf.MkVar 0))
+                      ]
                   }
             }
