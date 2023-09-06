@@ -192,6 +192,7 @@ compile buildDir definitions expr outPath = do
                 ValueAt (Stack offset) -> mov Op2{src = Mem{base = BaseRegister Rbp, offset}, dest = Rsi}
                 AddressOf (Metis.InstSelection.Symbol symbol) -> mov Op2{src = imm symbol, dest = Rsi}
                 AddressOf (Memory mem) -> lea Op2{src = mem, dest = Rsi}
+                Literal lit -> mov Op2{src = imm lit, dest = Rsi}
             , xor Op2{src = Rax, dest = Rax}
             , call (Metis.Isa.Symbol "printf")
             , mov Op2{src = imm (0 :: Word64), dest = Rdi}

@@ -98,7 +98,8 @@ deriving instance (Show (Register isa)) => Show (Location isa)
 deriving instance (Eq (Register isa)) => Eq (Location isa)
 
 data Value isa
-  = ValueAt (Location isa)
+  = Literal Literal
+  | ValueAt (Location isa)
   | AddressOf (Address isa)
 
 deriving instance (Show (Register isa)) => Show (Value isa)
@@ -292,12 +293,8 @@ instSelection_X86_64 ::
   [BlockAttribute] ->
   m (Value X86_64)
 instSelection_X86_64 nameTys available exprInfo expr liveness blockName blockAttributes = do
-  (a, s) <-
-    runInstSelectionT
-      nameTys
-      exprInfo
-      (initialInstSelectionState available liveness blockName blockAttributes)
-      (instSelectionExpr_X86_64 mempty expr)
+  let initialState = initialInstSelectionState available liveness blockName blockAttributes
+  (a, s) <- runInstSelectionT nameTys exprInfo initialState (instSelectionExpr_X86_64 mempty expr)
   ifor_ s.typeDicts generateTypeDict
   traverse_ (\Block{label, attributes, statements} -> Asm.block label attributes statements) s.previousBlocks
   _ <- Asm.block s.currentBlockName s.currentBlockAttributes s.currentBlockStatements
@@ -306,16 +303,13 @@ instSelection_X86_64 nameTys available exprInfo expr liveness blockName blockAtt
 instSelectionLiteral_X86_64 ::
   (MonadState (InstSelectionState X86_64) m, MonadLog m) =>
   Literal ->
-  m (Location X86_64)
-instSelectionLiteral_X86_64 lit = do
-  location <- allocLocation (Type.sizeOf $ Literal.typeOf lit)
-  case location of
-    Stack offset -> do
-      emit [mov Op2{src = imm lit, dest = Mem{base = BaseRegister Rbp, offset}}]
-      pure location
-    Register register -> do
-      emit [mov Op2{src = imm lit, dest = register}]
-      pure location
+  m (Value X86_64)
+instSelectionLiteral_X86_64 lit =
+  case lit of
+    Literal.Uint64{} ->
+      pure $ Literal lit
+    Literal.Bool{} ->
+      pure $ Literal lit
 
 typeDict :: (MonadState (InstSelectionState X86_64) m, MonadLog m) => Type Anf.Var -> m Symbol
 typeDict ty = do
@@ -371,7 +365,7 @@ instSelectionSimple_X86_64 simple =
     Anf.Var var ->
       ValueAt <$> lookupLocation var
     Anf.Literal lit ->
-      ValueAt <$> instSelectionLiteral_X86_64 lit
+      instSelectionLiteral_X86_64 lit
     Anf.Type ty ->
       instSelectionType_X86_64 ty
     Anf.Name name ->
@@ -656,6 +650,8 @@ moveRegisterFunctionArguments registerRemapping arguments = do
             pure [mov Op2{src = imm symbol, dest}]
           AddressOf (Memory mem) ->
             pure [lea Op2{src = mem, dest}]
+          Literal lit ->
+            pure [mov Op2{src = imm lit, dest}]
       RegisterFunctionArgument{size, src, dest} : arguments' -> do
         temp <- allocLocation size
         a <-
@@ -692,6 +688,8 @@ moveRegisterFunctionArguments registerRemapping arguments = do
               pure $ saveDestination temp dest <> [mov Op2{src = imm symbol, dest}]
             AddressOf (Memory mem) ->
               pure $ saveDestination temp dest <> [lea Op2{src = mem, dest}]
+            Literal lit ->
+              pure $ saveDestination temp dest <> [mov Op2{src = imm lit, dest}]
 
         b <- moveRegisterFunctionArguments (HashMap.insert dest temp registerRemapping) arguments'
 
@@ -936,6 +934,27 @@ storeq value destination = do
                 ]
       AddressOf (Memory mem) ->
         error "TODO: storeq AddressOf/Memory" mem
+      Literal lit ->
+        case destination of
+          Register destinationRegister ->
+            [mov Op2{src = imm lit, dest = Mem{base = BaseRegister destinationRegister, offset = 0}}]
+          Stack destinationOffset ->
+            case Seq.viewl available of
+              Seq.EmptyL ->
+                let destinationRegister = Rax
+                 in [ push destinationRegister
+                    , -- load pointer from memory
+                      mov Op2{src = Mem{base = BaseRegister Rbp, offset = destinationOffset}, dest = destinationRegister}
+                    , -- store value to pointer
+                      mov Op2{src = imm lit, dest = Mem{base = BaseRegister destinationRegister, offset = 0}}
+                    , pop destinationRegister
+                    ]
+              destinationRegister Seq.:< _ ->
+                [ -- load pointer from memory
+                  mov Op2{src = Mem{base = BaseRegister Rbp, offset = destinationOffset}, dest = destinationRegister}
+                , -- store value to pointer
+                  mov Op2{src = imm lit, dest = Mem{base = BaseRegister destinationRegister, offset = 0}}
+                ]
 
 {-
 case destination of
@@ -999,6 +1018,8 @@ copyValue ty value outputLocation =
             [mov Op2{src = imm label, dest = Rbx}]
           AddressOf (Memory mem) ->
             [lea Op2{src = mem, dest = Rbx}]
+          Literal lit ->
+            [mov Op2{src = imm lit, dest = Rbx}]
 
       emit $
         case outputLocation of
@@ -1081,6 +1102,8 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
                       [mov Op2{src = imm label, dest = Rax}]
                     AddressOf (Memory mem) ->
                       [lea Op2{src = mem, dest = Rax}]
+                    Literal lit ->
+                      [mov Op2{src = imm lit, dest = Rax}]
               Type.Composite{} -> error "TODO: composite return values"
               Type.Erased -> error "TODO: erased return values"
         emit $
@@ -1276,8 +1299,11 @@ instSelectionExpr_X86_64 varSizes expr =
                 error "TODO: instSelectionExpr_X86_64/Binop/a/Name" name
               Anf.Type ty ->
                 error "TODO: instSelectionExpr_X86_64/Binop/a/Type" ty
-              Anf.Literal lit ->
-                instSelectionLiteral_X86_64 lit
+              Anf.Literal lit -> do
+                location <- allocLocation . Type.sizeOf $ Literal.typeOf lit
+                lit' <- instSelectionLiteral_X86_64 lit
+                mov_vl lit' location
+                pure location
               Anf.Var aVar -> do
                 aLocation <- lookupLocation aVar
 
@@ -1424,7 +1450,9 @@ instSelectionExpr_X86_64 varSizes expr =
           Anf.Var var ->
             (,pure ()) <$> lookupLocation var
           Anf.Literal lit -> do
-            location <- instSelectionLiteral_X86_64 lit
+            location <- allocLocation . Type.sizeOf $ Literal.typeOf lit
+            lit' <- instSelectionLiteral_X86_64 lit
+            mov_vl lit' location
             pure (location, freeLocation location)
       case condLocation of
         Register register ->
@@ -1490,6 +1518,10 @@ instSelectionExpr_X86_64 varSizes expr =
               , mov Op2{src = Rax, dest = Mem{base = BaseRegister Rbp, offset = labelArgOffset}}
               , pop Rax
               ]
+            (Literal lit, Register labelArgRegister) ->
+              [mov Op2{src = imm lit, dest = labelArgRegister}]
+            (Literal lit, Stack labelArgOffset) ->
+              [mov Op2{src = imm lit, dest = Mem{base = BaseRegister Rbp, offset = labelArgOffset}}]
 
       emit [jmp $ Metis.Isa.Symbol . Text.pack $ "block_" <> show label.value]
       pure undefined -- TODO: How do I remove this undefined? Some tweak to the ANF representation?
@@ -1648,6 +1680,8 @@ instSelectionCall_X86_64 var function args = do
                   ]
                 register Seq.:< _ ->
                   [lea Op2{src = mem, dest = register}, push register]
+            Literal lit ->
+              [push (imm lit)]
 
       emit [push Rbp]
       emit [mov Op2{src = Rsp, dest = Rbp}]
@@ -1667,6 +1701,8 @@ instSelectionCall_X86_64 var function args = do
                 error "TODO: jump to address of memory when no registers available"
               register Seq.:< _ ->
                 [lea Op2{src = mem, dest = register}, jmp register]
+          Literal{} ->
+            error "cannot jump to literal"
 
       emitLabel
       freeKills var
@@ -1828,26 +1864,82 @@ allocTempRegister = do
 
 {-# ANN mov_vr ("HLint: ignore Use camelCase" :: String) #-}
 mov_vr ::
-  forall isa.
+  forall isa m.
   ( Isa isa
   , Mov isa (Register isa) (Register isa)
   , Mov isa (Memory isa) (Register isa)
   , Mov isa Immediate (Register isa)
   , Lea isa (Memory isa) (Register isa)
+  , MonadState (InstSelectionState isa) m
   ) =>
   Value isa ->
   Register isa ->
-  [Instruction isa]
+  m ()
 mov_vr value dest =
+  emit $
+    case value of
+      ValueAt (Register register) ->
+        [mov Op2{src = register, dest} | register /= dest]
+      ValueAt (Stack offset) -> do
+        [mov Op2{src = Mem{base = BaseRegister $ framePointerRegister @isa, offset}, dest}]
+      AddressOf (Metis.InstSelection.Symbol label) ->
+        [mov Op2{src = imm label, dest}]
+      AddressOf (Memory mem) ->
+        [lea Op2{src = mem, dest}]
+      Literal lit ->
+        [mov Op2{src = imm lit, dest}]
+
+{-# ANN mov_vm ("HLint: ignore Use camelCase" :: String) #-}
+mov_vm ::
+  forall isa m.
+  ( Isa isa
+  , Mov isa Immediate (Register isa)
+  , Mov isa Immediate (Memory isa)
+  , Mov isa (Register isa) (Register isa)
+  , Mov isa (Register isa) (Memory isa)
+  , Mov isa (Memory isa) (Register isa)
+  , Lea isa (Memory isa) (Register isa)
+  , MonadState (InstSelectionState isa) m
+  ) =>
+  Value isa ->
+  Memory isa ->
+  m ()
+mov_vm value dest =
   case value of
     ValueAt (Register register) ->
-      [mov Op2{src = register, dest} | register /= dest]
-    ValueAt (Stack offset) -> do
-      [mov Op2{src = Mem{base = BaseRegister $ framePointerRegister @isa, offset}, dest}]
+      emit [mov Op2{src = register, dest}]
+    ValueAt Stack{} ->
+      inRegister value $ \register ->
+        emit [mov Op2{src = register, dest}]
     AddressOf (Metis.InstSelection.Symbol label) ->
-      [mov Op2{src = imm label, dest}]
-    AddressOf (Memory mem) ->
-      [lea Op2{src = mem, dest}]
+      emit [mov Op2{src = imm label, dest}]
+    AddressOf Memory{} ->
+      inRegister value $ \register ->
+        emit [mov Op2{src = register, dest}]
+    Literal lit ->
+      emit [mov Op2{src = imm lit, dest}]
+
+{-# ANN mov_vl ("HLint: ignore Use camelCase" :: String) #-}
+mov_vl ::
+  forall isa m.
+  ( Isa isa
+  , Mov isa Immediate (Register isa)
+  , Mov isa Immediate (Memory isa)
+  , Mov isa (Register isa) (Register isa)
+  , Mov isa (Register isa) (Memory isa)
+  , Mov isa (Memory isa) (Register isa)
+  , Lea isa (Memory isa) (Register isa)
+  , MonadState (InstSelectionState isa) m
+  ) =>
+  Value isa ->
+  Location isa ->
+  m ()
+mov_vl value dest =
+  case dest of
+    Register register ->
+      mov_vr value register
+    Stack offset ->
+      mov_vm value Mem{base = BaseRegister $ framePointerRegister @isa, offset}
 
 {- | Moves a value to a register. If the value is already in a register, then nothing
 changes. If the value is at a stack address, then the contents at that stack address are moved into
@@ -1879,9 +1971,11 @@ inRegister value f = do
         pure (register, pure ())
       ValueAt Stack{} ->
         allocTempRegister
-      AddressOf _ ->
+      AddressOf{} ->
         allocTempRegister
-  emit $ mov_vr value register
+      Literal{} ->
+        allocTempRegister
+  mov_vr value register
   a <- f register
   freeRegister
   pure a
@@ -1957,6 +2051,8 @@ instSelectionStore_X86_64 _var ptr val = do
       error "TODO: Store/Var"
     Right Type.Uint64 ->
       case (ptr', val') of
+        (ValueAt (Register ptrRegister), Literal lit) -> do
+          emit [mov Op2{src = imm lit, dest = Mem{base = BaseRegister ptrRegister, offset = 0}}]
         (ValueAt (Register ptrRegister), _) -> do
           inRegister val' $ \valRegister ->
             emit [mov Op2{src = valRegister, dest = Mem{base = BaseRegister ptrRegister, offset = 0}}]
@@ -1968,12 +2064,20 @@ instSelectionStore_X86_64 _var ptr val = do
         (ValueAt (Stack offset), AddressOf{}) ->
           inRegister val' $ \valRegister ->
             emit [mov Op2{src = valRegister, dest = Mem{base = BaseRegister Rbp, offset}}]
+        (ValueAt (Stack offset), Literal lit) ->
+          emit [mov Op2{src = imm lit, dest = Mem{base = BaseRegister Rbp, offset}}]
+        (AddressOf (Metis.InstSelection.Symbol ptrLabel), Literal lit) ->
+          emit [mov Op2{src = imm lit, dest = Mem{base = BaseLabel @X86_64 ptrLabel, offset = 0}}]
         (AddressOf (Metis.InstSelection.Symbol ptrLabel), _) ->
           inRegister val' $ \valRegister ->
             emit [mov Op2{src = valRegister, dest = Mem{base = BaseLabel @X86_64 ptrLabel, offset = 0}}]
+        (AddressOf (Memory ptrMem), Literal lit) ->
+          emit [mov Op2{src = imm lit, dest = ptrMem}]
         (AddressOf (Memory ptrMem), _) ->
           inRegister val' $ \valRegister ->
             emit [mov Op2{src = valRegister, dest = ptrMem}]
+        (Literal{}, _) ->
+          error "cannot store to literal"
     Right Type.Bool ->
       error "TODO: Store/Bool"
     Right Type.Unit ->
