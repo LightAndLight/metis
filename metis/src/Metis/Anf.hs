@@ -39,7 +39,9 @@ import Data.Functor.Identity (runIdentity)
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 import Data.Hashable (Hashable)
+import qualified Data.Maybe as Maybe
 import Data.Text (Text)
+import Data.Traversable (for)
 import Data.Word (Word64)
 import qualified Metis.Core as Core
 import Metis.Kind (Kind)
@@ -50,8 +52,8 @@ import qualified Metis.Type as Type
 
 data Expr
   = Return Simple
-  | LetS Var VarInfo Simple Expr
-  | LetC Var VarInfo Compound Expr
+  | LetS Var (Type Var) Simple Expr
+  | LetC Var (Type Var) Compound Expr
   | IfThenElse Simple Expr Expr Expr
   | Jump Var Simple
   | Label Var Var Expr
@@ -75,6 +77,9 @@ typeOf varKinds nameTys varTys simple =
 data Compound
   = Binop Binop Simple Simple
   | Call Simple [Simple]
+  | Alloca (Type Var)
+  | Store Simple Simple
+  | Load Simple
   deriving (Show, Eq)
 
 data Binop = Add | Subtract
@@ -155,19 +160,16 @@ emit f = AnfBuilderT $ modify (\s -> s{program = s.program . f})
 data VarInfo = VarInfo {size :: Word64}
   deriving (Show, Eq)
 
-typeVarInfo :: Type ty -> VarInfo
-typeVarInfo ty = VarInfo{size = Type.sizeOf ty}
-
 letS :: (Monad m) => Type Var -> Simple -> AnfBuilderT m Var
 letS ty value = do
   var <- freshVar ty
-  emit $ LetS var (typeVarInfo ty) value
+  emit $ LetS var ty value
   pure var
 
 letC :: (Monad m) => Type Var -> Compound -> AnfBuilderT m Var
 letC ty value = do
   var <- freshVar ty
-  emit $ LetC var (typeVarInfo ty) value
+  emit $ LetC var ty value
   pure var
 
 block :: (Monad m) => Var -> Var -> AnfBuilderT m ()
@@ -183,8 +185,8 @@ programOf ma =
     put s'{program = s.program}
     pure (s'.program, a)
 
-fromCore :: (ty -> Var) -> (tm -> Var) -> Core.Expr ty tm -> (ExprInfo, Expr)
-fromCore toTyVar toVar expr =
+fromCore :: (Text -> Type Var) -> (ty -> Var) -> (tm -> Var) -> Core.Expr ty tm -> (ExprInfo, Expr)
+fromCore nameTys toTyVar toVar expr =
   ( ExprInfo
       { labelArgs = s.labelArgs
       , varKinds = s.varKinds
@@ -193,10 +195,10 @@ fromCore toTyVar toVar expr =
   , s.program (Return simple)
   )
   where
-    (s, simple) = runIdentity . runAnfBuilderT $ fromCoreExpr toTyVar toVar expr
+    (s, simple) = runIdentity . runAnfBuilderT $ fromCoreExpr nameTys toTyVar toVar expr
 
-fromFunction :: Core.Function -> Function
-fromFunction Core.Function{name, tyArgs, args, retTy, body} =
+fromFunction :: (Text -> Type Var) -> Core.Function -> Function
+fromFunction nameTys Core.Function{name, tyArgs, args, retTy, body} =
   Function
     { name
     , tyArgs = tyArgs'
@@ -211,7 +213,7 @@ fromFunction Core.Function{name, tyArgs, args, retTy, body} =
         tyVars <- traverse (\(_, kind) -> freshTyVar kind) tyArgs
         let renameTyVar index = tyVars !! fromIntegral @Word64 @Int index
         args'' <- traverse (\(_, ty) -> let ty' = fmap renameTyVar ty in (,) <$> freshVar ty' <*> pure ty') args
-        body' <- fromCoreExpr renameTyVar (\index -> fst $ args'' !! fromIntegral @Word64 @Int index) body
+        body' <- fromCoreExpr nameTys renameTyVar (\index -> fst $ args'' !! fromIntegral @Word64 @Int index) body
         pure
           ( zipWith (\tyVar (_, kind) -> (tyVar, kind)) tyVars tyArgs
           , args''
@@ -219,8 +221,14 @@ fromFunction Core.Function{name, tyArgs, args, retTy, body} =
           , body'
           )
 
-fromCoreExpr :: (Monad m) => (ty -> Var) -> (tm -> Var) -> Core.Expr ty tm -> AnfBuilderT m Simple
-fromCoreExpr toTyVar toVar expr =
+fromCoreExpr ::
+  (Monad m) =>
+  (Text -> Type Var) ->
+  (ty -> Var) ->
+  (tm -> Var) ->
+  Core.Expr ty tm ->
+  AnfBuilderT m Simple
+fromCoreExpr nameTys toTyVar toVar expr =
   case expr of
     Core.Var var ->
       pure $ Var (toVar var)
@@ -229,15 +237,15 @@ fromCoreExpr toTyVar toVar expr =
     Core.Literal lit ->
       pure $ Literal lit
     Core.Add ty a b -> do
-      a' <- fromCoreExpr toTyVar toVar a
-      b' <- fromCoreExpr toTyVar toVar b
+      a' <- fromCoreExpr nameTys toTyVar toVar a
+      b' <- fromCoreExpr nameTys toTyVar toVar b
       Var <$> letC (fmap toTyVar ty) (Binop Add a' b')
     Core.Subtract ty a b -> do
-      a' <- fromCoreExpr toTyVar toVar a
-      b' <- fromCoreExpr toTyVar toVar b
+      a' <- fromCoreExpr nameTys toTyVar toVar a
+      b' <- fromCoreExpr nameTys toTyVar toVar b
       Var <$> letC (fmap toTyVar ty) (Binop Subtract a' b')
     Core.Let _ _ valueTy value rest -> do
-      value' <- fromCoreExpr toTyVar toVar value
+      value' <- fromCoreExpr nameTys toTyVar toVar value
       var <-
         case value' of
           Var var ->
@@ -248,11 +256,11 @@ fromCoreExpr toTyVar toVar expr =
             letS (fmap toTyVar valueTy) value'
           Type{} ->
             letS (fmap toTyVar valueTy) value'
-      fromCoreExpr toTyVar (unvar (\() -> var) toVar) (fromScope rest)
+      fromCoreExpr nameTys toTyVar (unvar (\() -> var) toVar) (fromScope rest)
     Core.IfThenElse ty cond then_ else_ -> do
-      cond' <- fromCoreExpr toTyVar toVar cond
-      (then_', thenSimple) <- programOf $ fromCoreExpr toTyVar toVar then_
-      (else_', elseSimple) <- programOf $ fromCoreExpr toTyVar toVar else_
+      cond' <- fromCoreExpr nameTys toTyVar toVar cond
+      (then_', thenSimple) <- programOf $ fromCoreExpr nameTys toTyVar toVar then_
+      (else_', elseSimple) <- programOf $ fromCoreExpr nameTys toTyVar toVar else_
       label <- freshLabel
       emit $ IfThenElse cond' (then_' $ Jump label thenSimple) (else_' $ Jump label elseSimple)
 
@@ -260,6 +268,93 @@ fromCoreExpr toTyVar toVar expr =
       block label arg
       pure $ Var arg
     Core.Call ty function tyArgs args -> do
-      function' <- fromCoreExpr toTyVar toVar function
-      args' <- traverse (fromCoreExpr toTyVar toVar) args
-      Var <$> letC (fmap toTyVar ty) (Call function' $ fmap (Type . fmap toTyVar) tyArgs <> args')
+      let ty' = fmap toTyVar ty
+      function' <- fromCoreExpr nameTys toTyVar toVar function
+      let tyArgs' = fmap (fmap toTyVar) tyArgs
+      args' <- traverse (fromCoreExpr nameTys toTyVar toVar) args
+
+      varKinds <-
+        AnfBuilderT $
+          gets
+            ( \s var ->
+                Maybe.fromMaybe
+                  (error $ "var " <> show var <> " missing from var kinds map")
+                  (HashMap.lookup var s.varKinds)
+            )
+      varTys <-
+        AnfBuilderT $
+          gets
+            ( \s var ->
+                Maybe.fromMaybe
+                  (error $ "var " <> show var <> " missing from var types map")
+                  (HashMap.lookup var s.varTys)
+            )
+      let functionTy =
+            either
+              (\kind -> error $ "expected type, got kind " <> show kind)
+              id
+              (typeOf varKinds nameTys varTys function')
+      let (_tyVarsKinds, instantiatedArgTys, instantiatedRetTy) = instantiateFunctionType Type.Var functionTy tyArgs'
+      let (argTysPolymorphism, retTyPolymorphism) = getFunctionPolymorphism functionTy
+
+      args'' <-
+        for (zip3 instantiatedArgTys argTysPolymorphism args') $ \(instantiatedArgTy, argTyPolymorphism, arg) ->
+          case (instantiatedArgTy, argTyPolymorphism) of
+            (Type.Var{}, Poly) ->
+              pure arg
+            (_, Mono) ->
+              pure arg
+            (_, Poly) -> do
+              allocaResult <- Var <$> letC (Type.Ptr instantiatedArgTy) (Alloca instantiatedArgTy)
+              _ <- letC Type.Unit (Store allocaResult arg)
+              pure allocaResult
+      case (instantiatedRetTy, retTyPolymorphism) of
+        (Type.Var{}, Poly) ->
+          Var <$> letC ty' (Call function' (fmap Type tyArgs' <> args''))
+        (_, Mono) ->
+          Var <$> letC ty' (Call function' (fmap Type tyArgs' <> args''))
+        (_, Poly) -> do
+          callResult <- letC (Type.Ptr ty') (Call function' (fmap Type tyArgs' <> args''))
+          Var <$> letC ty' (Load $ Var callResult)
+  where
+    instantiateFunctionType :: (ty -> Type Var) -> Type ty -> [Type Var] -> ([(Text, Kind)], [Type Var], Type Var)
+    instantiateFunctionType subst ty tyArgs =
+      case ty of
+        Type.Fn args ret ->
+          ([], fmap (>>= subst) args, ret >>= subst)
+        Type.Forall tyArgKinds body ->
+          let tyArgCount = length tyArgKinds
+              (usedTyArgs, tyArgs') = splitAt tyArgCount tyArgs
+              (tyArgKinds', args', ret) =
+                instantiateFunctionType
+                  (unvar (\index -> usedTyArgs !! fromIntegral @Word64 @Int index) subst)
+                  (fromScope body)
+                  tyArgs'
+           in (tyArgKinds <> tyArgKinds', args', ret)
+        _ ->
+          case tyArgs of
+            [] -> ([], [], ty >>= subst)
+            _ -> error "too many type arguments"
+
+    getFunctionPolymorphism :: Type ty -> ([Polymorphism], Polymorphism)
+    getFunctionPolymorphism ty =
+      case ty of
+        Type.Fn args ret ->
+          (fmap getTypePolymorphism args, getTypePolymorphism ret)
+        Type.Forall _tyArgKinds body ->
+          getFunctionPolymorphism (fromScope body)
+        _ ->
+          ([], getTypePolymorphism ty)
+
+    getTypePolymorphism :: Type ty -> Polymorphism
+    getTypePolymorphism ty =
+      case ty of
+        Type.Var{} -> Poly
+        Type.Uint64 -> Mono
+        Type.Bool -> Mono
+        Type.Unit -> Mono
+        Type.Fn{} -> Mono
+        Type.Forall{} -> Mono
+        Type.Ptr{} -> Mono
+
+data Polymorphism = Poly | Mono

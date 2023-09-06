@@ -64,12 +64,12 @@ testCase TestCase{title, enabled, definitions, expr, availableRegisters, expecte
       let nameTys name = Maybe.fromMaybe (error $ show name <> " missing from name types map") $ HashMap.lookup name nameTysMap
 
       for_ definitions $ \function -> do
-        let function' = Anf.fromFunction function
+        let function' = Anf.fromFunction nameTys function
         let liveness = Liveness.liveness function'.body
         instSelectionFunction_X86_64 nameTys availableRegisters liveness function'
 
       _ <- do
-        let (anfInfo, anf) = Anf.fromCore absurd absurd expr
+        let (anfInfo, anf) = Anf.fromCore nameTys absurd absurd expr
         let liveness = Liveness.liveness anf
         instSelection_X86_64
           nameTys
@@ -513,12 +513,12 @@ spec =
                 , "mov %rsp, %rbp"
                 , "sub $16, %rsp" -- allocate locals
                 , "mov $99, -8(%rbp)"
+                , "push $after"
                 , -- set up arguments
                   "mov $type_Uint64, %rax" -- address of Uint64 type dictionary
                 , "lea -8(%rbp), %rbx" -- argument passed via stack
                 , "lea -16(%rbp), %rcx" -- result passed via stack
-                , -- begin: call `id`
-                  "push $after"
+                -- begin: call `id`
                 , "push %rbp"
                 , "mov %rsp, %rbp"
                 , "jmp id"

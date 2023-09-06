@@ -37,7 +37,7 @@ import qualified Metis.Asm.Class as Asm (block, string)
 import Metis.Codegen (printInstruction_X86_64)
 import qualified Metis.Core as Core
 import Metis.InstSelection (Address (..), Location (..), Value (..), instSelectionFunction_X86_64, instSelection_X86_64)
-import Metis.Isa (Memory (..), Op2 (..), Symbol (..), call, generalPurposeRegisters, imm, lea, mov, xor)
+import Metis.Isa (Memory (..), MemoryBase (..), Op2 (..), Symbol (..), call, generalPurposeRegisters, imm, lea, mov, xor)
 import Metis.Isa.X86_64 (Register (..), X86_64)
 import qualified Metis.Liveness as Liveness
 import Metis.Log (noLogging)
@@ -165,11 +165,11 @@ compile buildDir definitions expr outPath = do
   let availableRegisters = generalPurposeRegisters @X86_64
   asm <- fmap (Asm.printAsm printInstruction_X86_64) . Asm.runAsmBuilderT . noLogging $ do
     for_ definitions $ \function -> do
-      let function' = Anf.fromFunction function
+      let function' = Anf.fromFunction nameTys function
       let liveness = Liveness.liveness function'.body
       instSelectionFunction_X86_64 nameTys availableRegisters liveness function'
     resultValue <- do
-      let (anfInfo, anf) = Anf.fromCore absurd absurd expr
+      let (anfInfo, anf) = Anf.fromCore nameTys absurd absurd expr
       let liveness = Liveness.liveness anf
       instSelection_X86_64
         nameTys
@@ -189,7 +189,7 @@ compile buildDir definitions expr outPath = do
             [ lea Op2{src = formatString, dest = Rdi}
             , case resultValue of
                 ValueAt (Register register) -> mov Op2{src = register, dest = Rsi}
-                ValueAt (Stack offset) -> mov Op2{src = Mem{base = Rbp, offset}, dest = Rsi}
+                ValueAt (Stack offset) -> mov Op2{src = Mem{base = BaseRegister Rbp, offset}, dest = Rsi}
                 AddressOf (Metis.InstSelection.Symbol symbol) -> mov Op2{src = imm symbol, dest = Rsi}
                 AddressOf (Memory mem) -> lea Op2{src = mem, dest = Rsi}
             , xor Op2{src = Rax, dest = Rax}

@@ -30,7 +30,7 @@ import Control.Monad.Reader.Class (MonadReader, asks)
 import Control.Monad.State.Class (MonadState, gets, modify)
 import Control.Monad.State.Strict (State, StateT, runState, runStateT)
 import Data.Buildable (collectL')
-import Data.Foldable (for_, traverse_)
+import Data.Foldable (for_, toList, traverse_)
 import Data.Foldable.WithIndex (ifor_)
 import qualified Data.HashMap.Lazy as HashMap.Lazy
 import qualified Data.HashMap.Lazy as Lazy (HashMap)
@@ -44,7 +44,8 @@ import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Data.Word (Word64)
+import Data.Traversable (for)
+import Data.Word (Word64, Word8)
 import GHC.Stack (HasCallStack)
 import qualified Metis.Anf as Anf
 import Metis.Asm (Block (..), BlockAttribute, Statement (..))
@@ -53,15 +54,20 @@ import Metis.Asm.Class (MonadAsm)
 import qualified Metis.Asm.Class as Asm
 import Metis.Isa (
   Add,
+  Immediate,
   Instruction,
   Isa (generalPurposeRegisters),
+  Lea,
   Memory (..),
+  MemoryBase (..),
+  Mov,
   Op2 (..),
   Register,
   Sub,
   Symbol (..),
   add,
   cmp,
+  framePointerRegister,
   imm,
   je,
   jmp,
@@ -69,6 +75,7 @@ import Metis.Isa (
   mov,
   pop,
   push,
+  registerSize,
   ret,
   sub,
  )
@@ -304,7 +311,7 @@ instSelectionLiteral_X86_64 lit = do
   location <- allocLocation (Type.sizeOf $ Literal.typeOf lit)
   case location of
     Stack offset -> do
-      emit [mov Op2{src = imm lit, dest = Mem{base = Rbp, offset}}]
+      emit [mov Op2{src = imm lit, dest = Mem{base = BaseRegister Rbp, offset}}]
       pure location
     Register register -> do
       emit [mov Op2{src = imm lit, dest = register}]
@@ -329,6 +336,10 @@ typeDict ty = do
           "type_Fn"
         Type.Forall{} ->
           "type_Forall"
+        Type.Ptr{} ->
+          "type_Ptr"
+        Type.Unit{} ->
+          "type_Unit"
 
 instSelectionType_X86_64 ::
   (MonadState (InstSelectionState X86_64) m, MonadLog m) =>
@@ -345,6 +356,10 @@ instSelectionType_X86_64 ty = do
     Type.Fn{} ->
       AddressOf . Metis.InstSelection.Symbol <$> typeDict ty
     Type.Forall{} ->
+      AddressOf . Metis.InstSelection.Symbol <$> typeDict ty
+    Type.Unit ->
+      AddressOf . Metis.InstSelection.Symbol <$> typeDict ty
+    Type.Ptr{} ->
       AddressOf . Metis.InstSelection.Symbol <$> typeDict ty
 
 instSelectionSimple_X86_64 ::
@@ -449,7 +464,7 @@ setupFunctionArguments availableArgumentRegisters typeArgs valueArgs =
                     pure $
                       RegisterFunctionArgument
                         { size = Type.pointerSize
-                        , src = AddressOf $ Memory Mem{base = Rbp, offset}
+                        , src = AddressOf $ Memory Mem{base = BaseRegister Rbp, offset}
                         , dest = register
                         }
                   _ ->
@@ -466,6 +481,7 @@ setupFunctionArguments availableArgumentRegisters typeArgs valueArgs =
                         , stackFunctionArguments = []
                         }
                     Type.Composite{} -> error "TODO: types with composite calling conventions"
+                    Type.Erased -> error "TODO: types with erased calling conventions"
                 )
                   <>
                 )
@@ -519,9 +535,10 @@ setupStackFunctionArguments offset typeArgs valueArgs =
                 Type.Register ->
                   FunctionArguments
                     { registerFunctionArguments = []
-                    , stackFunctionArguments = [StackFunctionArgument{src = argLocation, dest = Mem{base = Rbp, offset}}]
+                    , stackFunctionArguments = [StackFunctionArgument{src = argLocation, dest = Mem{base = BaseRegister Rbp, offset}}]
                     }
                 Type.Composite{} -> error "TODO: types with composite calling conventions"
+                Type.Erased -> error "TODO: types with erased calling conventions"
             )
               <>
           )
@@ -532,7 +549,7 @@ setupStackFunctionArguments offset typeArgs valueArgs =
     (typeArgValue, _typeArgKind) : typeArgs' ->
       ( FunctionArguments
           { registerFunctionArguments = []
-          , stackFunctionArguments = [StackFunctionArgument{src = typeArgValue, dest = Mem{base = Rbp, offset}}]
+          , stackFunctionArguments = [StackFunctionArgument{src = typeArgValue, dest = Mem{base = BaseRegister Rbp, offset}}]
           }
           <>
       )
@@ -630,11 +647,11 @@ moveRegisterFunctionArguments registerRemapping arguments = do
                     Register srcRegisterRemappedRegister ->
                       mov Op2{src = srcRegisterRemappedRegister, dest}
                     Stack srcRegisterRemappedOffset ->
-                      mov Op2{src = Mem{base = Rbp, offset = srcRegisterRemappedOffset}, dest}
+                      mov Op2{src = Mem{base = BaseRegister Rbp, offset = srcRegisterRemappedOffset}, dest}
                   | srcRegisterRemapped /= Register dest
                   ]
           ValueAt (Stack srcOffset) ->
-            pure [mov Op2{src = Mem{base = Rbp, offset = srcOffset}, dest}]
+            pure [mov Op2{src = Mem{base = BaseRegister Rbp, offset = srcOffset}, dest}]
           AddressOf (Metis.InstSelection.Symbol symbol) ->
             pure [mov Op2{src = imm symbol, dest}]
           AddressOf (Memory mem) ->
@@ -662,7 +679,7 @@ moveRegisterFunctionArguments registerRemapping arguments = do
                                     Register srcRegisterRemappedRegister ->
                                       mov Op2{src = srcRegisterRemappedRegister, dest}
                                     Stack srcRegisterRemappedOffset ->
-                                      mov Op2{src = Mem{base = Rbp, offset = srcRegisterRemappedOffset}, dest}
+                                      mov Op2{src = Mem{base = BaseRegister Rbp, offset = srcRegisterRemappedOffset}, dest}
                                  ]
                   -- Even though the temporary registers are all freed at the end of this function,
                   -- they are freed incrementally so that the function uses a smaller set of
@@ -670,7 +687,7 @@ moveRegisterFunctionArguments registerRemapping arguments = do
                   freeLocation srcRegisterRemapped
                   pure a
             ValueAt (Stack srcOffset) ->
-              pure $ saveDestination temp dest <> [mov Op2{src = Mem{base = Rbp, offset = srcOffset}, dest}]
+              pure $ saveDestination temp dest <> [mov Op2{src = Mem{base = BaseRegister Rbp, offset = srcOffset}, dest}]
             AddressOf (Metis.InstSelection.Symbol symbol) ->
               pure $ saveDestination temp dest <> [mov Op2{src = imm symbol, dest}]
             AddressOf (Memory mem) ->
@@ -689,7 +706,7 @@ moveRegisterFunctionArguments registerRemapping arguments = do
           Register tempRegister ->
             mov Op2{src = dest, dest = tempRegister}
           Stack tempOffset ->
-            mov Op2{src = dest, dest = Mem{base = Rbp, offset = tempOffset}}
+            mov Op2{src = dest, dest = Mem{base = BaseRegister Rbp, offset = tempOffset}}
       ]
 
 getRegistersUsedByFunction ::
@@ -727,6 +744,8 @@ getRegistersUsedByFunction registerPool typeArgKinds argTys retTy =
           goCallingConventionRegister
         Type.Composite ccs ->
           traverse_ goCallingConvention ccs
+        Type.Erased ->
+          error "TODO: goCallingConvention/Erased"
 
     goCallingConventionRegister :: State (Seq (Register isa), HashSet (Register isa)) ()
     goCallingConventionRegister = do
@@ -745,8 +764,8 @@ generateTypeDict name ty =
       copy <-
         -- Type_Uint64_copy(self : *Type, from : *Uint64, to : *Uint64)
         Asm.block "Type_Uint64_copy" [] . fmap Instruction $
-          [ mov Op2{src = Mem{base = Rbx, offset = 0}, dest = Rdx}
-          , mov Op2{src = Rdx, dest = Mem{base = Rcx, offset = 0}}
+          [ mov Op2{src = Mem{base = BaseRegister Rbx, offset = 0}, dest = Rdx}
+          , mov Op2{src = Rdx, dest = Mem{base = BaseRegister Rcx, offset = 0}}
           , mov Op2{src = Rcx, dest = Rax}
           , pop Rbp
           , ret ()
@@ -759,8 +778,8 @@ generateTypeDict name ty =
     Type.Bool -> do
       copy <-
         Asm.block "Type_Bool_copy" [] . fmap Instruction $
-          [ movzbq Op2{src = Mem{base = Rbx, offset = 0}, dest = Rdx}
-          , movb Op2{src = Dl, dest = Mem{base = Rcx, offset = 0}}
+          [ movzbq Op2{src = Mem{base = BaseRegister Rbx, offset = 0}, dest = Rdx}
+          , movb Op2{src = Dl, dest = Mem{base = BaseRegister Rcx, offset = 0}}
           , mov Op2{src = Rcx, dest = Rax}
           , pop Rbp
           , ret ()
@@ -773,8 +792,8 @@ generateTypeDict name ty =
     Type.Fn{} -> do
       copy <-
         Asm.block "Type_Fn_copy" [] . fmap Instruction $
-          [ mov Op2{src = Mem{base = Rbx, offset = 0}, dest = Rdx}
-          , mov Op2{src = Rdx, dest = Mem{base = Rcx, offset = 0}}
+          [ mov Op2{src = Mem{base = BaseRegister Rbx, offset = 0}, dest = Rdx}
+          , mov Op2{src = Rdx, dest = Mem{base = BaseRegister Rcx, offset = 0}}
           , mov Op2{src = Rcx, dest = Rax}
           , pop Rbp
           , ret ()
@@ -787,8 +806,8 @@ generateTypeDict name ty =
     Type.Forall{} -> do
       copy <-
         Asm.block "Type_Forall_copy" [] . fmap Instruction $
-          [ mov Op2{src = Mem{base = Rbx, offset = 0}, dest = Rdx}
-          , mov Op2{src = Rdx, dest = Mem{base = Rcx, offset = 0}}
+          [ mov Op2{src = Mem{base = BaseRegister Rbx, offset = 0}, dest = Rdx}
+          , mov Op2{src = Rdx, dest = Mem{base = BaseRegister Rcx, offset = 0}}
           , mov Op2{src = Rcx, dest = Rax}
           , pop Rbp
           , ret ()
@@ -799,6 +818,17 @@ generateTypeDict name ty =
         [ Directive $ Asm.quad (8 :: Word64)
         , Directive $ Asm.quad copy
         ]
+    Type.Unit -> do
+      copy <-
+        Asm.block "Type_Unit_copy" [] $ fmap Instruction [pop Rbp, ret ()]
+      Asm.block
+        name.value
+        []
+        [ Directive $ Asm.quad (0 :: Word64)
+        , Directive $ Asm.quad copy
+        ]
+    Type.Ptr{} ->
+      error "TODO: generateTypeDict/Ptr"
 
 -- | Store an 8-byte value in the pointer held by a location.
 storeq :: (MonadState (InstSelectionState X86_64) m) => Value X86_64 -> Location X86_64 -> m ()
@@ -809,23 +839,23 @@ storeq value destination = do
       ValueAt (Register register) ->
         case destination of
           Register destinationRegister ->
-            [mov Op2{src = register, dest = Mem{base = destinationRegister, offset = 0}}]
+            [mov Op2{src = register, dest = Mem{base = BaseRegister destinationRegister, offset = 0}}]
           Stack destinationOffset ->
             case Seq.viewl available of
               Seq.EmptyL ->
                 let destinationRegister = Rax
                  in [ push destinationRegister
                     , -- load pointer from memory
-                      mov Op2{src = Mem{base = Rbp, offset = destinationOffset}, dest = destinationRegister}
+                      mov Op2{src = Mem{base = BaseRegister Rbp, offset = destinationOffset}, dest = destinationRegister}
                     , -- store value to pointer
-                      mov Op2{src = register, dest = Mem{base = destinationRegister, offset = 0}}
+                      mov Op2{src = register, dest = Mem{base = BaseRegister destinationRegister, offset = 0}}
                     , pop destinationRegister
                     ]
               destinationRegister Seq.:< _ ->
                 [ -- load pointer from memory
-                  mov Op2{src = Mem{base = Rbp, offset = destinationOffset}, dest = destinationRegister}
+                  mov Op2{src = Mem{base = BaseRegister Rbp, offset = destinationOffset}, dest = destinationRegister}
                 , -- store value to pointer
-                  mov Op2{src = register, dest = Mem{base = destinationRegister, offset = 0}}
+                  mov Op2{src = register, dest = Mem{base = BaseRegister destinationRegister, offset = 0}}
                 ]
       ValueAt (Stack offset) ->
         case destination of
@@ -835,16 +865,16 @@ storeq value destination = do
                 let register = Rax
                  in [ push register
                     , -- load value from memory
-                      mov Op2{src = Mem{base = Rbp, offset}, dest = register}
+                      mov Op2{src = Mem{base = BaseRegister Rbp, offset}, dest = register}
                     , -- store value to pointer
-                      mov Op2{src = register, dest = Mem{base = destinationRegister, offset = 0}}
+                      mov Op2{src = register, dest = Mem{base = BaseRegister destinationRegister, offset = 0}}
                     , pop register
                     ]
               register Seq.:< _ ->
                 [ -- load value from memory
-                  mov Op2{src = Mem{base = Rbp, offset}, dest = register}
+                  mov Op2{src = Mem{base = BaseRegister Rbp, offset}, dest = register}
                 , -- store value to pointer
-                  mov Op2{src = register, dest = Mem{base = destinationRegister, offset = 0}}
+                  mov Op2{src = register, dest = Mem{base = BaseRegister destinationRegister, offset = 0}}
                 ]
           Stack destinationOffset ->
             case Seq.viewl available of
@@ -854,11 +884,11 @@ storeq value destination = do
                  in [ push register
                     , push destinationRegister
                     , -- load value from memory
-                      mov Op2{src = Mem{base = Rbp, offset}, dest = register}
+                      mov Op2{src = Mem{base = BaseRegister Rbp, offset}, dest = register}
                     , -- load pointer from memory
-                      mov Op2{src = Mem{base = Rbp, offset = destinationOffset}, dest = destinationRegister}
+                      mov Op2{src = Mem{base = BaseRegister Rbp, offset = destinationOffset}, dest = destinationRegister}
                     , -- store value to pointer
-                      mov Op2{src = register, dest = Mem{base = destinationRegister, offset = 0}}
+                      mov Op2{src = register, dest = Mem{base = BaseRegister destinationRegister, offset = 0}}
                     , pop destinationRegister
                     , pop register
                     ]
@@ -868,41 +898,41 @@ storeq value destination = do
                     let destinationRegister = Rax
                      in [ push destinationRegister
                         , -- load value from memory
-                          mov Op2{src = Mem{base = Rbp, offset}, dest = register}
+                          mov Op2{src = Mem{base = BaseRegister Rbp, offset}, dest = register}
                         , -- load pointer from memory
-                          mov Op2{src = Mem{base = Rbp, offset = destinationOffset}, dest = destinationRegister}
+                          mov Op2{src = Mem{base = BaseRegister Rbp, offset = destinationOffset}, dest = destinationRegister}
                         , -- store value to pointer
-                          mov Op2{src = register, dest = Mem{base = destinationRegister, offset = 0}}
+                          mov Op2{src = register, dest = Mem{base = BaseRegister destinationRegister, offset = 0}}
                         , pop destinationRegister
                         ]
                   destinationRegister Seq.:< _ ->
                     [ -- load value from memory
-                      mov Op2{src = Mem{base = Rbp, offset}, dest = register}
+                      mov Op2{src = Mem{base = BaseRegister Rbp, offset}, dest = register}
                     , -- load pointer from memory
-                      mov Op2{src = Mem{base = Rbp, offset = destinationOffset}, dest = destinationRegister}
+                      mov Op2{src = Mem{base = BaseRegister Rbp, offset = destinationOffset}, dest = destinationRegister}
                     , -- store value to pointer
-                      mov Op2{src = register, dest = Mem{base = destinationRegister, offset = 0}}
+                      mov Op2{src = register, dest = Mem{base = BaseRegister destinationRegister, offset = 0}}
                     ]
       AddressOf (Metis.InstSelection.Symbol label) ->
         case destination of
           Register destinationRegister ->
-            [mov Op2{src = imm label, dest = Mem{base = destinationRegister, offset = 0}}]
+            [mov Op2{src = imm label, dest = Mem{base = BaseRegister destinationRegister, offset = 0}}]
           Stack destinationOffset ->
             case Seq.viewl available of
               Seq.EmptyL ->
                 let destinationRegister = Rax
                  in [ push destinationRegister
                     , -- load pointer from memory
-                      mov Op2{src = Mem{base = Rbp, offset = destinationOffset}, dest = destinationRegister}
+                      mov Op2{src = Mem{base = BaseRegister Rbp, offset = destinationOffset}, dest = destinationRegister}
                     , -- store value to pointer
-                      mov Op2{src = imm label, dest = Mem{base = destinationRegister, offset = 0}}
+                      mov Op2{src = imm label, dest = Mem{base = BaseRegister destinationRegister, offset = 0}}
                     , pop destinationRegister
                     ]
               destinationRegister Seq.:< _ ->
                 [ -- load pointer from memory
-                  mov Op2{src = Mem{base = Rbp, offset = destinationOffset}, dest = destinationRegister}
+                  mov Op2{src = Mem{base = BaseRegister Rbp, offset = destinationOffset}, dest = destinationRegister}
                 , -- store value to pointer
-                  mov Op2{src = imm label, dest = Mem{base = destinationRegister, offset = 0}}
+                  mov Op2{src = imm label, dest = Mem{base = BaseRegister destinationRegister, offset = 0}}
                 ]
       AddressOf (Memory mem) ->
         error "TODO: storeq AddressOf/Memory" mem
@@ -910,23 +940,23 @@ storeq value destination = do
 {-
 case destination of
   Register destinationRegister ->
-    [lea Op2{src = mem, dest = Mem{base = destinationRegister, offset = 0}}]
+    [lea Op2{src = mem, dest = Mem{base = BaseRegister destinationRegister, offset = 0}}]
   Stack destinationOffset ->
     case Seq.viewl available of
       Seq.EmptyL ->
         let destinationRegister = Rax
          in [ push destinationRegister
             , -- load pointer from memory
-              mov Op2{src = Mem{base = Rbp, offset = destinationOffset}, dest = destinationRegister}
+              mov Op2{src = Mem{base = BaseRegister Rbp, offset = destinationOffset}, dest = destinationRegister}
             , -- store value to pointer
-              lea Op2{src = mem, dest = Mem{base = destinationRegister, offset = 0}}
+              lea Op2{src = mem, dest = Mem{base = BaseRegister destinationRegister, offset = 0}}
             , pop destinationRegister
             ]
       destinationRegister Seq.:< _ ->
         [ -- load pointer from memory
-          mov Op2{src = Mem{base = Rbp, offset = destinationOffset}, dest = destinationRegister}
+          mov Op2{src = Mem{base = BaseRegister Rbp, offset = destinationOffset}, dest = destinationRegister}
         , -- store value to pointer
-          lea Op2{src = mem, dest = Mem{base = destinationRegister, offset = 0}}
+          lea Op2{src = mem, dest = Mem{base = BaseRegister destinationRegister, offset = 0}}
         ]
 -}
 
@@ -958,13 +988,13 @@ copyValue ty value outputLocation =
           Register register ->
             [mov Op2{src = register, dest = Rax} | register /= Rax]
           Stack offset ->
-            [mov Op2{src = Mem{base = Rbp, offset}, dest = Rax}]
+            [mov Op2{src = Mem{base = BaseRegister Rbp, offset}, dest = Rax}]
       emit $
         case value of
           ValueAt (Register register) ->
             [mov Op2{src = register, dest = Rbx} | register /= Rbx]
           ValueAt (Stack offset) ->
-            [mov Op2{src = Mem{base = Rbp, offset}, dest = Rbx}]
+            [mov Op2{src = Mem{base = BaseRegister Rbp, offset}, dest = Rbx}]
           AddressOf (Metis.InstSelection.Symbol label) ->
             [mov Op2{src = imm label, dest = Rbx}]
           AddressOf (Memory mem) ->
@@ -975,7 +1005,7 @@ copyValue ty value outputLocation =
           Register register ->
             [mov Op2{src = register, dest = Rcx} | register /= Rcx]
           Stack offset ->
-            [mov Op2{src = Mem{base = Rbp, offset}, dest = Rcx}]
+            [mov Op2{src = Mem{base = BaseRegister Rbp, offset}, dest = Rcx}]
       emit
         [ push Rbp
         , mov Op2{src = Rsp, dest = Rbp}
@@ -983,7 +1013,7 @@ copyValue ty value outputLocation =
             Op2
               { src =
                   Mem
-                    { base = Rax
+                    { base = BaseRegister Rax
                     , -- offset of `copy` function
                       offset = 8
                     }
@@ -1007,6 +1037,10 @@ copyValue ty value outputLocation =
     Type.Forall{} -> do
       storeq value outputLocation
       pure outputLocation
+    Type.Unit ->
+      error "TODO: copyValue/Unit"
+    Type.Ptr{} ->
+      error "TODO: copyValue/Ptr"
 
 instSelectionFunction_X86_64 ::
   (MonadAsm X86_64 m, MonadLog m, MonadFix m) =>
@@ -1033,7 +1067,7 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
                 Register register ->
                   [mov Op2{src = register, dest = Rax} | register /= Rax]
                 Stack offset ->
-                  [mov Op2{src = Mem{base = Rbp, offset}, dest = Rax}]
+                  [mov Op2{src = Mem{base = BaseRegister Rbp, offset}, dest = Rax}]
           Nothing ->
             case Type.callingConventionOf function.retTy of
               Type.Register ->
@@ -1042,12 +1076,13 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
                     ValueAt (Register register) ->
                       [mov Op2{src = register, dest = Rax} | register /= Rax]
                     ValueAt (Stack offset) ->
-                      [mov Op2{src = Mem{base = Rbp, offset}, dest = Rax}]
+                      [mov Op2{src = Mem{base = BaseRegister Rbp, offset}, dest = Rax}]
                     AddressOf (Metis.InstSelection.Symbol label) ->
                       [mov Op2{src = imm label, dest = Rax}]
                     AddressOf (Memory mem) ->
                       [lea Op2{src = mem, dest = Rax}]
               Type.Composite{} -> error "TODO: composite return values"
+              Type.Erased -> error "TODO: erased return values"
         emit $
           [add Op2{dest = Rsp, src = imm localsSize} | localsSize > 0]
             <> [pop Rbp]
@@ -1141,6 +1176,8 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
                         retTy
                 Type.Composite{} ->
                   error "TODO: composite function arguments"
+                Type.Erased ->
+                  error "TODO: erased function arguments"
 
     setupStackArguments ::
       (MonadState (InstSelectionState isa) m) =>
@@ -1181,6 +1218,7 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
                     args'
                     retTy
                 Type.Composite{} -> error "TODO: composite stack function arguments"
+                Type.Erased -> error "TODO: erased stack function arguments"
 
 instSelectionExpr_X86_64 ::
   (MonadState (InstSelectionState X86_64) m, MonadReader (InstSelectionEnv X86_64) m, MonadLog m) =>
@@ -1191,7 +1229,7 @@ instSelectionExpr_X86_64 varSizes expr =
   case expr of
     Anf.Return simple ->
       instSelectionSimple_X86_64 simple
-    Anf.LetS var varInfo value rest -> do
+    Anf.LetS var ty value rest -> do
       freeKills var
 
       valueLocation <-
@@ -1199,18 +1237,18 @@ instSelectionExpr_X86_64 varSizes expr =
           Anf.Var var' ->
             lookupLocation var'
           Anf.Literal lit -> do
-            location <- allocLocation varInfo.size
+            location <- allocLocation $ Type.sizeOf ty
             case location of
               Stack offset -> do
-                emit [mov Op2{src = imm lit, dest = Mem{base = Rbp, offset}}]
+                emit [mov Op2{src = imm lit, dest = Mem{base = BaseRegister Rbp, offset}}]
                 pure location
               Register register -> do
                 emit [mov Op2{src = imm lit, dest = register}]
                 pure location
-          Anf.Name name ->
-            error "TODO: instSelectionExpr_X86_64/Name" name
-          Anf.Type ty ->
-            error "TODO: instSelectionExpr_X86_64/Type" ty
+          Anf.Name{} ->
+            error "TODO: instSelectionExpr_X86_64/Name"
+          Anf.Type{} ->
+            error "TODO: instSelectionExpr_X86_64/Type"
       modify (\s -> s{locations = HashMap.Lazy.insert var valueLocation s.locations})
 
       instSelectionExpr_X86_64 varSizes rest
@@ -1309,14 +1347,14 @@ instSelectionExpr_X86_64 varSizes expr =
                       (Register aRegister, Register aRegister') ->
                         emit [mov Op2{src = aRegister, dest = aRegister'}]
                       (Register aRegister, Stack aOffset') ->
-                        emit [mov Op2{src = aRegister, dest = Mem{base = Rbp, offset = aOffset'}}]
+                        emit [mov Op2{src = aRegister, dest = Mem{base = BaseRegister Rbp, offset = aOffset'}}]
                       (Stack aOffset, Register aRegister') ->
-                        emit [mov Op2{src = Mem{base = Rbp, offset = aOffset}, dest = aRegister'}]
+                        emit [mov Op2{src = Mem{base = BaseRegister Rbp, offset = aOffset}, dest = aRegister'}]
                       (Stack aOffset, Stack aOffset') ->
                         emit
                           [ push Rax
-                          , mov Op2{src = Mem{base = Rbp, offset = aOffset}, dest = Rax}
-                          , mov Op2{src = Rax, dest = Mem{base = Rbp, offset = aOffset'}}
+                          , mov Op2{src = Mem{base = BaseRegister Rbp, offset = aOffset}, dest = Rax}
+                          , mov Op2{src = Rax, dest = Mem{base = BaseRegister Rbp, offset = aOffset'}}
                           , pop Rax
                           ]
                 pure aLocation
@@ -1329,7 +1367,7 @@ instSelectionExpr_X86_64 varSizes expr =
             Anf.Literal lit -> do
               case aLocation of
                 Stack aOffset ->
-                  emit [op' Op2{src = imm lit, dest = Mem{base = Rbp, offset = aOffset}}]
+                  emit [op' Op2{src = imm lit, dest = Mem{base = BaseRegister Rbp, offset = aOffset}}]
                 Register aRegister ->
                   emit [op' Op2{src = imm lit, dest = aRegister}]
             Anf.Var bVar -> do
@@ -1338,13 +1376,13 @@ instSelectionExpr_X86_64 varSizes expr =
                 (Register aRegister, Register bRegister) ->
                   [op' Op2{dest = aRegister, src = bRegister}]
                 (Register aRegister, Stack bOffset) ->
-                  [op' Op2{dest = aRegister, src = Mem{base = Rbp, offset = bOffset}}]
+                  [op' Op2{dest = aRegister, src = Mem{base = BaseRegister Rbp, offset = bOffset}}]
                 (Stack aOffset, Register bRegister) -> do
-                  [op' Op2{dest = Mem{base = Rbp, offset = aOffset}, src = bRegister}]
+                  [op' Op2{dest = Mem{base = BaseRegister Rbp, offset = aOffset}, src = bRegister}]
                 (Stack aOffset, Stack bOffset) ->
                   [ push Rax
-                  , mov Op2{src = Mem{base = Rbp, offset = bOffset}, dest = Rax}
-                  , op' Op2{dest = Mem{base = Rbp, offset = aOffset}, src = Rax}
+                  , mov Op2{src = Mem{base = BaseRegister Rbp, offset = bOffset}, dest = Rax}
+                  , op' Op2{dest = Mem{base = BaseRegister Rbp, offset = aOffset}, src = Rax}
                   , pop Rax
                   ]
 
@@ -1368,6 +1406,12 @@ instSelectionExpr_X86_64 varSizes expr =
               Anf.Type{} ->
                 liveness.kills
           modify (\s -> s{locations = HashMap.Lazy.insert var aLocation s.locations})
+        Anf.Alloca ty ->
+          instSelectionAlloca_X86_64 var ty
+        Anf.Store ptr val ->
+          instSelectionStore_X86_64 var ptr val
+        Anf.Load ptr ->
+          instSelectionLoad_X86_64 var ptr
 
       instSelectionExpr_X86_64 varSizes rest
     Anf.IfThenElse cond then_ else_ rest -> do
@@ -1386,7 +1430,7 @@ instSelectionExpr_X86_64 varSizes expr =
         Register register ->
           emit [cmp register (imm @Word64 0)]
         Stack offset ->
-          emit [cmp Mem{base = Rbp, offset} (imm @Word64 0)]
+          emit [cmp Mem{base = BaseRegister Rbp, offset} (imm @Word64 0)]
       freeCondLocation
 
       (_thenLabel, beginThen) <- declareLabel "then"
@@ -1425,25 +1469,25 @@ instSelectionExpr_X86_64 varSizes expr =
             (ValueAt (Register argRegister), Register labelArgRegister) ->
               [mov Op2{src = argRegister, dest = labelArgRegister}]
             (ValueAt (Register argRegister), Stack labelArgOffset) ->
-              [mov Op2{src = argRegister, dest = Mem{base = Rbp, offset = labelArgOffset}}]
+              [mov Op2{src = argRegister, dest = Mem{base = BaseRegister Rbp, offset = labelArgOffset}}]
             (ValueAt (Stack argOffset), Register labelArgRegister) -> do
-              [mov Op2{src = Mem{base = Rbp, offset = argOffset}, dest = labelArgRegister}]
+              [mov Op2{src = Mem{base = BaseRegister Rbp, offset = argOffset}, dest = labelArgRegister}]
             (ValueAt (Stack argOffset), Stack labelArgOffset) ->
               [ push Rax
-              , mov Op2{src = Mem{base = Rbp, offset = argOffset}, dest = Rax}
-              , mov Op2{src = Rax, dest = Mem{base = Rbp, offset = labelArgOffset}}
+              , mov Op2{src = Mem{base = BaseRegister Rbp, offset = argOffset}, dest = Rax}
+              , mov Op2{src = Rax, dest = Mem{base = BaseRegister Rbp, offset = labelArgOffset}}
               , pop Rax
               ]
             (AddressOf (Metis.InstSelection.Symbol symbol), Register labelArgRegister) -> do
               [mov Op2{src = imm symbol, dest = labelArgRegister}]
             (AddressOf (Metis.InstSelection.Symbol symbol), Stack labelArgOffset) ->
-              [mov Op2{src = imm symbol, dest = Mem{base = Rbp, offset = labelArgOffset}}]
+              [mov Op2{src = imm symbol, dest = Mem{base = BaseRegister Rbp, offset = labelArgOffset}}]
             (AddressOf (Memory mem), Register labelArgRegister) -> do
               [lea Op2{src = mem, dest = labelArgRegister}]
             (AddressOf (Memory mem), Stack labelArgOffset) ->
               [ push Rax
               , lea Op2{src = mem, dest = Rax}
-              , mov Op2{src = Rax, dest = Mem{base = Rbp, offset = labelArgOffset}}
+              , mov Op2{src = Rax, dest = Mem{base = BaseRegister Rbp, offset = labelArgOffset}}
               , pop Rax
               ]
 
@@ -1590,7 +1634,7 @@ instSelectionCall_X86_64 var function args = do
             ValueAt (Register register) ->
               [push register]
             ValueAt (Stack offset) ->
-              [push Mem{base = Rbp, offset}]
+              [push Mem{base = BaseRegister Rbp, offset}]
             AddressOf (Metis.InstSelection.Symbol symbol) ->
               [push (imm symbol)]
             AddressOf (Memory mem) ->
@@ -1599,7 +1643,7 @@ instSelectionCall_X86_64 var function args = do
                   [ sub Op2{src = imm (8 :: Word64), dest = Rsp}
                   , push Rax
                   , lea Op2{src = mem, dest = Rax}
-                  , mov Op2{src = Rax, dest = Mem{base = Rsp, offset = 8}}
+                  , mov Op2{src = Rax, dest = Mem{base = BaseRegister Rsp, offset = 8}}
                   , pop Rax
                   ]
                 register Seq.:< _ ->
@@ -1614,7 +1658,7 @@ instSelectionCall_X86_64 var function args = do
           ValueAt (Register register) ->
             [jmp register]
           ValueAt (Stack offset) ->
-            [jmp Mem{base = Rbp, offset}]
+            [jmp Mem{base = BaseRegister Rbp, offset}]
           AddressOf (Metis.InstSelection.Symbol symbol) ->
             [jmp symbol]
           AddressOf (Memory mem) ->
@@ -1650,12 +1694,332 @@ instSelectionCall_X86_64 var function args = do
                 emit
                   [ case location of
                       Register register -> mov Op2{src = Rax, dest = register}
-                      Stack offset -> mov Op2{src = Rax, dest = Mem{base = Rbp, offset}}
+                      Stack offset -> mov Op2{src = Rax, dest = Mem{base = BaseRegister Rbp, offset}}
                   ]
                 pure location
           modify (\s -> s{locations = HashMap.insert var location s.locations})
         Type.Composite{} ->
           error "TODO: composite return types"
+        Type.Erased ->
+          error "TODO: erased return types"
 
       for_ (Seq.reverse callerSavedRegisters) $ \register -> emit [pop register]
     ty -> error $ "trying to call a non-function type: " <> show ty
+
+instSelectionAlloca_X86_64 ::
+  (MonadState (InstSelectionState X86_64) m, MonadReader (InstSelectionEnv X86_64) m, MonadLog m) =>
+  Anf.Var ->
+  Type Anf.Var ->
+  m ()
+instSelectionAlloca_X86_64 var ty = do
+  location <-
+    case ty of
+      Type.Var{} ->
+        error "TODO: Alloca/Var"
+      Type.Uint64 ->
+        allocaKnown ty
+      Type.Bool ->
+        allocaKnown ty
+      Type.Unit ->
+        error "TODO: Alloca/Unit"
+      Type.Fn{} -> do
+        allocaKnown ty
+      Type.Forall{} -> do
+        allocaKnown ty
+      Type.Ptr{} -> do
+        allocaKnown ty
+  modify (\s -> s{locations = HashMap.Lazy.insert var location s.locations})
+  where
+    allocaKnown ty' = do
+      offset <- allocStack $ Type.sizeOf ty'
+      location <- allocLocation Type.pointerSize
+      available <- gets (.available)
+      emit $
+        case location of
+          Register locationRegister ->
+            [lea Op2{src = Mem{base = BaseRegister Rbp, offset}, dest = locationRegister}]
+          Stack locationOffset ->
+            case Seq.viewl available of
+              Seq.EmptyL ->
+                let locationRegister = Rax
+                 in [ push locationRegister
+                    , lea Op2{src = Mem{base = BaseRegister Rbp, offset}, dest = locationRegister}
+                    , mov Op2{src = locationRegister, dest = Mem{base = BaseRegister Rbp, offset = locationOffset}}
+                    , pop locationRegister
+                    ]
+              locationRegister Seq.:< _ ->
+                [ lea Op2{src = Mem{base = BaseRegister Rbp, offset}, dest = locationRegister}
+                , mov Op2{src = locationRegister, dest = Mem{base = BaseRegister Rbp, offset = locationOffset}}
+                ]
+      pure location
+
+allocTempRegisters ::
+  forall isa m.
+  ( MonadState (InstSelectionState isa) m
+  , Isa isa
+  , Mov isa (Memory isa) (Register isa)
+  , Mov isa (Register isa) (Memory isa)
+  ) =>
+  Word8 ->
+  m ([Register isa], m ())
+allocTempRegisters n =
+  if n == 0
+    then pure ([], pure ())
+    else do
+      available <- gets (.available)
+      case Seq.viewl available of
+        Seq.EmptyL -> do
+          let n' = fromIntegral @Word8 @Int n
+          let registers = generalPurposeRegisters @isa
+          let registersLength = length registers
+          if n' <= registersLength
+            then do
+              let allocated = toList $ Seq.take n' registers
+              registersAndOffsets <-
+                for allocated $ \register -> do
+                  offset <- allocStack (registerSize @isa)
+                  emit [mov Op2{src = register, dest = Mem{base = BaseRegister $ framePointerRegister @isa, offset}}]
+                  pure (register, offset)
+              pure
+                ( allocated
+                , traverse_
+                    (\(register, offset) -> emit [mov Op2{src = Mem{base = BaseRegister $ framePointerRegister @isa, offset}, dest = register}])
+                    registersAndOffsets
+                )
+            else
+              error $
+                "tried to allocate "
+                  <> show n'
+                  <> " registers, but only "
+                  <> show registersLength
+                  <> " available: "
+                  <> show registers
+        register Seq.:< available' -> do
+          modify (\s -> s{available = available'})
+          (registers, free) <- allocTempRegisters (n - 1)
+          pure
+            ( register : registers
+            , free *> modify (\s -> s{available = register Seq.<| s.available})
+            )
+
+{- | Allocate a temporary register. Returns the allocated register and an action that will "free"
+the register. The "free" action must be called when the register is no longer in use.
+
+"Nested" (successive calls without a call to "free" in between) calls to 'allocTempRegister' are
+invalid because of the way it spills when no registers are available.
+When no registers are available, 'allocTempRegister' picks the first of 'generalPurposeRegisters' as
+the target register.
+The existing contents of this register are saved to stack memory and restored after the callback.
+On 'X86_64', a "nested" 'allocateTempRegister' call like @allocateTempRegister >>= \r1 -> allocateTempRegister
+>>= \r2 -> ...@ would give @r1 == r2 == Rax@, which is not the expected behaviour for register allocation.
+-}
+allocTempRegister ::
+  ( MonadState (InstSelectionState isa) m
+  , Isa isa
+  , Mov isa (Memory isa) (Register isa)
+  , Mov isa (Register isa) (Memory isa)
+  ) =>
+  m (Register isa, m ())
+allocTempRegister = do
+  (registers, freeRegister) <- allocTempRegisters 1
+  case registers of
+    [register] -> pure (register, freeRegister)
+    _ -> undefined
+
+{-# ANN mov_vr ("HLint: ignore Use camelCase" :: String) #-}
+mov_vr ::
+  forall isa.
+  ( Isa isa
+  , Mov isa (Register isa) (Register isa)
+  , Mov isa (Memory isa) (Register isa)
+  , Mov isa Immediate (Register isa)
+  , Lea isa (Memory isa) (Register isa)
+  ) =>
+  Value isa ->
+  Register isa ->
+  [Instruction isa]
+mov_vr value dest =
+  case value of
+    ValueAt (Register register) ->
+      [mov Op2{src = register, dest} | register /= dest]
+    ValueAt (Stack offset) -> do
+      [mov Op2{src = Mem{base = BaseRegister $ framePointerRegister @isa, offset}, dest}]
+    AddressOf (Metis.InstSelection.Symbol label) ->
+      [mov Op2{src = imm label, dest}]
+    AddressOf (Memory mem) ->
+      [lea Op2{src = mem, dest}]
+
+{- | Moves a value to a register. If the value is already in a register, then nothing
+changes. If the value is at a stack address, then the contents at that stack address are moved into
+a temporary register.
+
+Nested calls to 'inRegister' are invalid because of the way it spills when no registers are
+available. When no registers are available, 'inRegister' picks 'Rax' as the target register. The
+contents of 'Rax' are saved to stack memory and restored after the callback. A nested 'inRegister'
+call like @inRegister l1 (\r1 -> inRegister l2 (\r2 -> ...))@ would give @r1 == r2 == Rax@, which
+is not the expected behaviour for register allocation.
+-}
+inRegister ::
+  forall isa m a.
+  ( MonadState (InstSelectionState isa) m
+  , Isa isa
+  , Mov isa (Register isa) (Register isa)
+  , Mov isa (Memory isa) (Register isa)
+  , Mov isa (Register isa) (Memory isa)
+  , Mov isa Immediate (Register isa)
+  , Lea isa (Memory isa) (Register isa)
+  ) =>
+  Value isa ->
+  (Register isa -> m a) ->
+  m a
+inRegister value f = do
+  (register, freeRegister) <-
+    case value of
+      ValueAt (Register register) ->
+        pure (register, pure ())
+      ValueAt Stack{} ->
+        allocTempRegister
+      AddressOf _ ->
+        allocTempRegister
+  emit $ mov_vr value register
+  a <- f register
+  freeRegister
+  pure a
+
+{-
+inRegister2 ::
+  forall isa m a.
+  ( MonadState (InstSelectionState isa) m
+  , Isa isa
+  , Mov isa (Register isa) (Register isa)
+  , Mov isa (Memory isa) (Register isa)
+  , Mov isa (Register isa) (Memory isa)
+  , Mov isa Immediate (Register isa)
+  , Lea isa (Memory isa) (Register isa)
+  ) =>
+  Value isa ->
+  Value isa ->
+  (Register isa -> Register isa -> m a) ->
+  m a
+inRegister2 value1 value2 f = do
+  (registers, freeRegister) <-
+    case (value1, value2) of
+      (ValueAt (Register register1), ValueAt (Register register2)) ->
+        pure ([register1, register2], pure ())
+      (ValueAt (Register register1), ValueAt Stack{}) -> do
+        (register2, free) <- allocTempRegister
+        pure ([register1, register2], free)
+      (ValueAt (Register register1), AddressOf _) -> do
+        (register2, free) <- allocTempRegister
+        pure ([register1, register2], free)
+      (ValueAt Stack{}, ValueAt (Register register2)) -> do
+        (register1, free) <- allocTempRegister
+        pure ([register1, register2], free)
+      (ValueAt Stack{}, ValueAt Stack{}) ->
+        allocTempRegisters 2
+      (ValueAt Stack{}, AddressOf _) ->
+        allocTempRegisters 2
+      (AddressOf _, ValueAt (Register register2)) -> do
+        (register1, free) <- allocTempRegister
+        pure ([register1, register2], free)
+      (AddressOf _, ValueAt Stack{}) ->
+        allocTempRegisters 2
+      (AddressOf _, AddressOf _) ->
+        allocTempRegisters 2
+  case registers of
+    [register1, register2] -> do
+      emit $ mov_vr value1 register1 <> mov_vr value2 register2
+      a <- f register1 register2
+      freeRegister
+      pure a
+    _ ->
+      undefined
+-}
+
+instSelectionStore_X86_64 ::
+  (MonadState (InstSelectionState X86_64) m, MonadReader (InstSelectionEnv X86_64) m, MonadLog m) =>
+  Anf.Var ->
+  -- | Type: @Ptr a@
+  Anf.Simple ->
+  -- | Type: @a@
+  Anf.Simple ->
+  m ()
+instSelectionStore_X86_64 _var ptr val = do
+  ptr' <- instSelectionSimple_X86_64 ptr
+  val' <- instSelectionSimple_X86_64 val
+
+  -- TODO: assign `var` to Unit value after
+  varKinds <- asks (.varKinds)
+  nameTys <- asks (.nameTys)
+  varTys <- asks (.varTys)
+  case Anf.typeOf varKinds nameTys varTys val of
+    Right Type.Var{} ->
+      error "TODO: Store/Var"
+    Right Type.Uint64 ->
+      case (ptr', val') of
+        (ValueAt (Register ptrRegister), _) -> do
+          inRegister val' $ \valRegister ->
+            emit [mov Op2{src = valRegister, dest = Mem{base = BaseRegister ptrRegister, offset = 0}}]
+        (ValueAt (Stack offset), ValueAt (Register valRegister)) ->
+          emit [mov Op2{src = valRegister, dest = Mem{base = BaseRegister Rbp, offset}}]
+        (ValueAt (Stack offset), ValueAt Stack{}) ->
+          inRegister val' $ \valRegister ->
+            emit [mov Op2{src = valRegister, dest = Mem{base = BaseRegister Rbp, offset}}]
+        (ValueAt (Stack offset), AddressOf{}) ->
+          inRegister val' $ \valRegister ->
+            emit [mov Op2{src = valRegister, dest = Mem{base = BaseRegister Rbp, offset}}]
+        (AddressOf (Metis.InstSelection.Symbol ptrLabel), _) ->
+          inRegister val' $ \valRegister ->
+            emit [mov Op2{src = valRegister, dest = Mem{base = BaseLabel @X86_64 ptrLabel, offset = 0}}]
+        (AddressOf (Memory ptrMem), _) ->
+          inRegister val' $ \valRegister ->
+            emit [mov Op2{src = valRegister, dest = ptrMem}]
+    Right Type.Bool ->
+      error "TODO: Store/Bool"
+    Right Type.Unit ->
+      error "TODO: Store/Unit"
+    Right Type.Fn{} -> do
+      error "TODO: Store/Fn"
+    Right Type.Forall{} -> do
+      error "TODO: Store/Forall"
+    Right Type.Ptr{} -> do
+      error "TODO: Store/Ptr"
+    Left kind ->
+      error $ "expected type, got kind " <> show kind
+
+instSelectionLoad_X86_64 ::
+  (MonadState (InstSelectionState X86_64) m, MonadReader (InstSelectionEnv X86_64) m, MonadLog m) =>
+  Anf.Var ->
+  -- | Type: @Ptr a@
+  Anf.Simple ->
+  m ()
+instSelectionLoad_X86_64 var ptr = do
+  ptr' <- instSelectionSimple_X86_64 ptr
+
+  varTys <- asks (.varTys)
+  let ty = varTys var
+  case ty of
+    Type.Var{} ->
+      error "TODO: Load/Var"
+    Type.Uint64 -> do
+      location <- allocLocation $ Type.sizeOf ty
+      inRegister ptr' $ \ptrRegister ->
+        emit $
+          case location of
+            Register register ->
+              [mov Op2{src = Mem{base = BaseRegister ptrRegister, offset = 0}, dest = register}]
+            Stack offset ->
+              [ mov Op2{src = Mem{base = BaseRegister ptrRegister, offset = 0}, dest = ptrRegister}
+              , mov Op2{src = ptrRegister, dest = Mem{base = BaseRegister Rbp, offset}}
+              ]
+      modify (\s -> s{locations = HashMap.insert var location s.locations})
+    Type.Bool ->
+      error "TODO: Load/Bool"
+    Type.Unit ->
+      error "TODO: Load/Unit"
+    Type.Fn{} -> do
+      error "TODO: Load/Fn"
+    Type.Forall{} -> do
+      error "TODO: Load/Forall"
+    Type.Ptr{} -> do
+      error "TODO: Load/Ptr"

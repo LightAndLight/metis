@@ -82,6 +82,9 @@ instance Isa X86_64 where
     | Cmp_mi (Memory X86_64) Immediate
     deriving (Eq, Show)
 
+  registerSize = 8
+  framePointerRegister = Rbp
+
   registerName reg =
     case reg of
       Rax -> "rax"

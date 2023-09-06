@@ -14,7 +14,7 @@ module Metis.Codegen (
 
 import Data.Text.Lazy.Builder (Builder)
 import qualified Data.Text.Lazy.Builder as Builder
-import Metis.Isa (Immediate (..), Isa (..), Memory (..), Op2 (..), Symbol (..))
+import Metis.Isa (Immediate (..), Isa (..), Memory (..), MemoryBase (..), Op2 (..), Symbol (..))
 import Metis.Isa.X86_64 (Inst2 (..), Instruction (..), X86_64)
 
 printRegister :: (Isa isa) => Register isa -> Builder
@@ -30,8 +30,16 @@ printMemory :: (Isa isa) => Memory isa -> Builder
 printMemory Mem{base, offset} =
   (if offset /= 0 then Builder.fromString (show offset) else mempty)
     <> "("
-    <> printRegister base
+    <> printMemoryBase base
     <> ")"
+
+printMemoryBase :: (Isa isa) => MemoryBase isa -> Builder
+printMemoryBase memBase =
+  case memBase of
+    BaseRegister reg ->
+      printRegister reg
+    BaseLabel sym ->
+      printSymbol sym
 
 printSymbol :: Symbol -> Builder
 printSymbol sym = Builder.fromText sym.value

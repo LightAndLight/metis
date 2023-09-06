@@ -6,12 +6,15 @@ import Bound.Scope.Simple (toScope)
 import Bound.Var (Var (..))
 import Data.CallStack (HasCallStack)
 import Data.HashMap.Strict (HashMap)
+import qualified Data.HashMap.Strict as HashMap
+import Data.Text (Text)
 import Data.Void (Void, absurd)
 import qualified Metis.Anf as Anf
 import Metis.Core (Expr (..))
 import qualified Metis.Literal as Literal
 import Metis.Liveness (Liveness (..))
 import qualified Metis.Liveness as Liveness
+import Metis.Type (Type)
 import qualified Metis.Type as Type
 import Test.Hspec (Spec, describe, it, shouldBe)
 
@@ -19,9 +22,9 @@ spec :: Spec
 spec =
   describe "Test.Liveness" $ do
     let
-      livenessShouldBe :: (HasCallStack) => Expr Void Void -> HashMap Anf.Var Liveness -> IO ()
-      livenessShouldBe expr expectation = do
-        let (_info, anf) = Anf.fromCore absurd absurd expr
+      livenessShouldBe :: (HasCallStack) => (HashMap Text (Type Anf.Var), Expr Void Void) -> HashMap Anf.Var Liveness -> IO ()
+      livenessShouldBe (nameTys, expr) expectation = do
+        let (_info, anf) = Anf.fromCore (nameTys HashMap.!) absurd absurd expr
         let liveness = Liveness.liveness anf
 
         liveness `shouldBe` expectation
@@ -34,7 +37,7 @@ spec =
             Let Type.Uint64 Nothing Type.Uint64 lit99 . toScope $
               Add Type.Uint64 (Var $ B ()) (Var $ B ())
 
-      expr
+      (mempty, expr)
         `livenessShouldBe` [ (Anf.MkVar 0, Liveness{kills = []})
                            , (Anf.MkVar 1, Liveness{kills = [Anf.MkVar 0]})
                            ]
@@ -78,7 +81,7 @@ spec =
       %8
       -}
 
-      expr
+      (mempty, expr)
         `livenessShouldBe` [ (Anf.MkVar 0, Liveness{kills = []})
                            , (Anf.MkVar 1, Liveness{kills = [Anf.MkVar 0]})
                            , (Anf.MkVar 2, Liveness{kills = []})
@@ -109,7 +112,7 @@ spec =
       %3
       -}
 
-      expr
+      (mempty, expr)
         `livenessShouldBe` [ (Anf.MkVar 0, Liveness{kills = []})
                            , (Anf.MkVar 2, Liveness{kills = []})
                            , (Anf.MkVar 3, Liveness{kills = [Anf.MkVar 0, Anf.MkVar 2]})
@@ -129,7 +132,7 @@ spec =
       %3 = %0 + %2
       -}
 
-      expr
+      ([("f", Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64)], expr)
         `livenessShouldBe` [ (Anf.MkVar 0, Liveness{kills = []})
                            , (Anf.MkVar 1, Liveness{kills = []})
                            , (Anf.MkVar 2, Liveness{kills = [Anf.MkVar 1]})

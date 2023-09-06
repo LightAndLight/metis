@@ -1,3 +1,4 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -11,6 +12,7 @@ module Metis.Isa (
   Immediate (..),
   ToImmediate (..),
   Memory (..),
+  MemoryBase (..),
   Symbol (..),
 
   -- * Common instructions
@@ -41,6 +43,9 @@ class (Eq (Register isa), Show (Register isa), Hashable (Register isa)) => Isa i
   data Register isa :: Type
   data Instruction isa :: Type
 
+  registerSize :: Word64
+  framePointerRegister :: Register isa
+
   registerName :: Register isa -> Text
 
   generalPurposeRegisters :: Seq (Register isa)
@@ -65,10 +70,17 @@ instance ToImmediate Word64 where
 instance ToImmediate Symbol where
   imm = Label
 
-data Memory isa = Mem {base :: Register isa, offset :: Int64}
+data Memory isa = Mem {base :: MemoryBase isa, offset :: Int64}
 
 deriving instance (Eq (Register isa)) => Eq (Memory isa)
 deriving instance (Show (Register isa)) => Show (Memory isa)
+
+data MemoryBase isa
+  = BaseRegister (Register isa)
+  | BaseLabel Symbol
+
+deriving instance (Eq (Register isa)) => Eq (MemoryBase isa)
+deriving instance (Show (Register isa)) => Show (MemoryBase isa)
 
 newtype Symbol = Symbol {value :: Text}
   deriving (Eq, Show, Hashable)

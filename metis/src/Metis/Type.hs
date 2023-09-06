@@ -34,6 +34,8 @@ data Type a
   | Bool
   | Fn [Type a] (Type a)
   | Forall [(Text, Kind)] (Scope Word64 Type a)
+  | Ptr (Type a)
+  | Unit
   deriving (Functor, Foldable, Traversable, Generic, Generic1)
 
 deriveShow1 ''Type
@@ -52,8 +54,10 @@ instance Monad Type where
   Var a >>= f = f a
   Uint64 >>= _ = Uint64
   Bool >>= _ = Bool
+  Unit >>= _ = Unit
   Fn args ret >>= f = Fn (fmap (>>= f) args) (ret >>= f)
   Forall args body >>= f = Forall args (body >>>= f)
+  Ptr a >>= f = Ptr (a >>= f)
 
 pointerSize :: Word64
 pointerSize = 8 -- assumes 64 bit target architecture
@@ -66,10 +70,13 @@ sizeOf ty =
     Bool -> 1
     Fn{} -> pointerSize
     Forall{} -> pointerSize
+    Ptr{} -> pointerSize
+    Unit -> 0
 
 data CallingConvention
   = Register
   | Composite [CallingConvention]
+  | Erased
 
 callingConventionOf :: Type a -> CallingConvention
 callingConventionOf ty =
@@ -79,6 +86,8 @@ callingConventionOf ty =
     Bool -> Register
     Fn{} -> Register
     Forall{} -> Register
+    Ptr{} -> Register
+    Unit -> Erased
 
 kindOf :: (a -> Kind) -> Type a -> Kind
 kindOf varKind ty =
@@ -88,6 +97,8 @@ kindOf varKind ty =
     Bool -> Kind.Type
     Fn{} -> Kind.Type
     Forall{} -> Kind.Type
+    Ptr{} -> Kind.Type
+    Unit -> Kind.Type
 
 forall_ :: [(Text, Kind)] -> Type Word64 -> Type a
 forall_ tyVars body =

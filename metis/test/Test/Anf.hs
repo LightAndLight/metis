@@ -1,4 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedLists #-}
 
 module Test.Anf (spec) where
@@ -6,11 +5,15 @@ module Test.Anf (spec) where
 import Bound.Scope.Simple (toScope)
 import Bound.Var (Var (..))
 import Data.CallStack (HasCallStack)
+import Data.HashMap.Strict (HashMap)
+import qualified Data.HashMap.Strict as HashMap
+import Data.Text (Text)
 import Data.Void (Void, absurd)
 import qualified Metis.Anf as Anf
 import Metis.Core (Expr (..), Function (..))
 import qualified Metis.Kind as Kind
 import qualified Metis.Literal as Literal
+import Metis.Type (Type)
 import qualified Metis.Type as Type
 import Test.Hspec (Spec, describe, it, shouldBe)
 
@@ -19,8 +22,8 @@ spec =
   describe "Test.Anf" $ do
     describe "fromCore" $ do
       let
-        anfShouldBe :: (HasCallStack) => Expr Void Void -> Anf.Expr -> IO ()
-        anfShouldBe expr expectation = snd (Anf.fromCore absurd absurd expr) `shouldBe` expectation
+        anfShouldBe :: (HasCallStack) => (HashMap Text (Type Anf.Var), Expr Void Void) -> Anf.Expr -> IO ()
+        anfShouldBe (nameTys, expr) expectation = snd (Anf.fromCore (nameTys HashMap.!) absurd absurd expr) `shouldBe` expectation
 
       it "let x = 99; x + x" $ do
         let lit99 = Literal.Uint64 99
@@ -37,16 +40,17 @@ spec =
         let anf =
               Anf.LetS
                 (Anf.MkVar 0)
-                (Anf.VarInfo{size = Type.sizeOf Type.Uint64})
+                Type.Uint64
                 (Anf.Literal lit99)
                 ( Anf.LetC
                     (Anf.MkVar 1)
-                    (Anf.VarInfo{size = Type.sizeOf Type.Uint64})
+                    Type.Uint64
                     (Anf.Binop Anf.Add (Anf.Var $ Anf.MkVar 0) (Anf.Var $ Anf.MkVar 0))
                     (Anf.Return . Anf.Var $ Anf.MkVar 1)
                 )
 
-        core `anfShouldBe` anf
+        (mempty, core) `anfShouldBe` anf
+
       it "let x = if true then 99 else 100; x + x" $ do
         let lit99 = Literal.Uint64 99
         let lit100 = Literal.Uint64 100
@@ -76,10 +80,10 @@ spec =
         let anf =
               Anf.IfThenElse (Anf.Literal $ Literal.Bool True) (Anf.Jump (Anf.MkVar 0) (Anf.Literal lit99)) (Anf.Jump (Anf.MkVar 0) (Anf.Literal lit100)) $
                 Anf.Label (Anf.MkVar 0) (Anf.MkVar 1) $
-                  Anf.LetC (Anf.MkVar 2) (Anf.VarInfo{size = Type.sizeOf Type.Uint64}) (Anf.Binop Anf.Add (Anf.Var $ Anf.MkVar 1) (Anf.Var $ Anf.MkVar 1)) $
+                  Anf.LetC (Anf.MkVar 2) Type.Uint64 (Anf.Binop Anf.Add (Anf.Var $ Anf.MkVar 1) (Anf.Var $ Anf.MkVar 1)) $
                     Anf.Return (Anf.Var $ Anf.MkVar 2)
 
-        core `anfShouldBe` anf
+        (mempty, core) `anfShouldBe` anf
       it "let x = if true then let y = 1; y + 98 else let y = 2; let z = 3; y + z + 95; x + x" $ do
         let
           core =
@@ -119,25 +123,24 @@ spec =
         %8 = %7 + %7
         %8
         -}
-        let uint64Info = Anf.VarInfo{size = 8}
         let anf =
               Anf.IfThenElse
                 (Anf.Literal $ Literal.Bool True)
-                ( Anf.LetS (Anf.MkVar 0) uint64Info (Anf.Literal $ Literal.Uint64 1) $
-                    Anf.LetC (Anf.MkVar 1) uint64Info (Anf.Binop Anf.Add (Anf.Var $ Anf.MkVar 0) (Anf.Literal $ Literal.Uint64 98)) $
+                ( Anf.LetS (Anf.MkVar 0) Type.Uint64 (Anf.Literal $ Literal.Uint64 1) $
+                    Anf.LetC (Anf.MkVar 1) Type.Uint64 (Anf.Binop Anf.Add (Anf.Var $ Anf.MkVar 0) (Anf.Literal $ Literal.Uint64 98)) $
                       Anf.Jump (Anf.MkVar 6) (Anf.Var $ Anf.MkVar 1)
                 )
-                ( Anf.LetS (Anf.MkVar 2) uint64Info (Anf.Literal $ Literal.Uint64 2) $
-                    Anf.LetS (Anf.MkVar 3) uint64Info (Anf.Literal $ Literal.Uint64 3) $
-                      Anf.LetC (Anf.MkVar 4) uint64Info (Anf.Binop Anf.Add (Anf.Var $ Anf.MkVar 2) (Anf.Var $ Anf.MkVar 3)) $
-                        Anf.LetC (Anf.MkVar 5) uint64Info (Anf.Binop Anf.Add (Anf.Var $ Anf.MkVar 4) (Anf.Literal $ Literal.Uint64 95)) $
+                ( Anf.LetS (Anf.MkVar 2) Type.Uint64 (Anf.Literal $ Literal.Uint64 2) $
+                    Anf.LetS (Anf.MkVar 3) Type.Uint64 (Anf.Literal $ Literal.Uint64 3) $
+                      Anf.LetC (Anf.MkVar 4) Type.Uint64 (Anf.Binop Anf.Add (Anf.Var $ Anf.MkVar 2) (Anf.Var $ Anf.MkVar 3)) $
+                        Anf.LetC (Anf.MkVar 5) Type.Uint64 (Anf.Binop Anf.Add (Anf.Var $ Anf.MkVar 4) (Anf.Literal $ Literal.Uint64 95)) $
                           Anf.Jump (Anf.MkVar 6) (Anf.Var $ Anf.MkVar 5)
                 )
                 $ Anf.Label (Anf.MkVar 6) (Anf.MkVar 7)
-                $ Anf.LetC (Anf.MkVar 8) uint64Info (Anf.Binop Anf.Add (Anf.Var $ Anf.MkVar 7) (Anf.Var $ Anf.MkVar 7))
+                $ Anf.LetC (Anf.MkVar 8) Type.Uint64 (Anf.Binop Anf.Add (Anf.Var $ Anf.MkVar 7) (Anf.Var $ Anf.MkVar 7))
                 $ Anf.Return (Anf.Var $ Anf.MkVar 8)
 
-        core `anfShouldBe` anf
+        (mempty, core) `anfShouldBe` anf
       it "let x = 1; let y = 2; 3 + f(x, y)" $ do
         let
           core =
@@ -151,28 +154,39 @@ spec =
         %2 = f(%0, %1)
         %3 = 3 + %2
         -}
-        let uint64Info = Anf.VarInfo{size = 8}
         let anf =
-              Anf.LetS (Anf.MkVar 0) uint64Info (Anf.Literal $ Literal.Uint64 1) $
-                Anf.LetS (Anf.MkVar 1) uint64Info (Anf.Literal $ Literal.Uint64 2) $
-                  Anf.LetC (Anf.MkVar 2) uint64Info (Anf.Call (Anf.Name "f") [Anf.Var $ Anf.MkVar 0, Anf.Var $ Anf.MkVar 1]) $
-                    Anf.LetC (Anf.MkVar 3) uint64Info (Anf.Binop Anf.Add (Anf.Literal $ Literal.Uint64 3) (Anf.Var $ Anf.MkVar 2)) $
+              Anf.LetS (Anf.MkVar 0) Type.Uint64 (Anf.Literal $ Literal.Uint64 1) $
+                Anf.LetS (Anf.MkVar 1) Type.Uint64 (Anf.Literal $ Literal.Uint64 2) $
+                  Anf.LetC (Anf.MkVar 2) Type.Uint64 (Anf.Call (Anf.Name "f") [Anf.Var $ Anf.MkVar 0, Anf.Var $ Anf.MkVar 1]) $
+                    Anf.LetC (Anf.MkVar 3) Type.Uint64 (Anf.Binop Anf.Add (Anf.Literal $ Literal.Uint64 3) (Anf.Var $ Anf.MkVar 2)) $
                       Anf.Return (Anf.Var $ Anf.MkVar 3)
-        core `anfShouldBe` anf
+        ([("f", Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64)], core) `anfShouldBe` anf
 
       it "id : forall a. a -> a |- id @Uint64 99" $ do
         let core = Call Type.Uint64 (Name "id") [Type.Uint64] [Literal $ Literal.Uint64 99]
 
-        let uint64Info = Anf.VarInfo{size = 8}
+        {-
+        %0 : *Uint64 = alloca(Uint64)
+        %1 : ()      = store(%0, 99)
+        %2 : *Uint64 = id(Uint64, %0)
+        %3 : Uint64  = load(%2)
+        ret %3
+        -}
         let anf =
-              Anf.LetC (Anf.MkVar 0) uint64Info (Anf.Call (Anf.Name "id") [Anf.Type Type.Uint64, Anf.Literal $ Literal.Uint64 99]) $
-                Anf.Return (Anf.Var $ Anf.MkVar 0)
-        core `anfShouldBe` anf
+              Anf.LetC (Anf.MkVar 0) (Type.Ptr Type.Uint64) (Anf.Alloca Type.Uint64) $
+                Anf.LetC (Anf.MkVar 1) Type.Unit (Anf.Store (Anf.Var $ Anf.MkVar 0) (Anf.Literal $ Literal.Uint64 99)) $
+                  Anf.LetC (Anf.MkVar 2) (Type.Ptr Type.Uint64) (Anf.Call (Anf.Name "id") [Anf.Type Type.Uint64, Anf.Var $ Anf.MkVar 0]) $
+                    Anf.LetC (Anf.MkVar 3) Type.Uint64 (Anf.Load (Anf.Var $ Anf.MkVar 2)) $
+                      Anf.Return (Anf.Var $ Anf.MkVar 3)
+        ( [("id", Type.Forall [("a", Kind.Type)] . toScope $ Type.Fn [Type.Var $ B 0] (Type.Var $ B 0))]
+          , core
+          )
+          `anfShouldBe` anf
 
     describe "fromFunction" $ do
       let
         anfShouldBe :: (HasCallStack) => Function -> Anf.Function -> IO ()
-        anfShouldBe function expectation = Anf.fromFunction function `shouldBe` expectation
+        anfShouldBe function expectation = Anf.fromFunction (const undefined) function `shouldBe` expectation
 
       it "id @(a : Type) (x : a) = x" $ do
         Function

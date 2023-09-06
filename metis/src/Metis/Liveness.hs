@@ -1,5 +1,6 @@
 module Metis.Liveness (liveness, Liveness (..)) where
 
+import Data.Buildable (collectL')
 import Data.Foldable (fold)
 import qualified Data.HashMap.Lazy as HashMap.Lazy
 import qualified Data.HashMap.Lazy as Lazy (HashMap)
@@ -8,6 +9,7 @@ import qualified Data.HashMap.Strict as HashMap
 import Data.HashSet (HashSet)
 import qualified Data.HashSet as HashSet
 import Metis.Anf (Compound (..), Expr (..), Simple (..), Var)
+import Metis.Type (Type)
 
 -- | Every variable has a 'Liveness' status.
 newtype Liveness = Liveness
@@ -85,11 +87,17 @@ livenessExpr labelArgVars expr =
         , labelArgVars'
         )
 
+varsType :: Type Var -> HashSet Var
+varsType = collectL'
+
 varsCompound :: Compound -> HashSet Var
 varsCompound compound =
   case compound of
     Binop _ a b -> varsSimple a <> varsSimple b
     Call a bs -> varsSimple a <> foldMap varsSimple bs
+    Alloca ty -> varsType ty
+    Store a b -> varsSimple a <> varsSimple b
+    Load a -> varsSimple a
 
 varsSimple :: Simple -> HashSet Var
 varsSimple simple =

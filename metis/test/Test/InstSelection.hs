@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -10,7 +11,10 @@ import Bound.Var (Var (..))
 import Control.Monad (void)
 import Control.Monad.State.Class (modify)
 import Control.Monad.State.Strict (evalState)
+import Data.HashMap.Strict (HashMap)
+import qualified Data.HashMap.Strict as HashMap
 import Data.Sequence as Seq
+import Data.Text (Text)
 import qualified Data.Text.Lazy as Lazy (Text)
 import qualified Data.Text.Lazy as Text.Lazy
 import qualified Data.Text.Lazy.Builder as Builder
@@ -36,6 +40,7 @@ import Metis.Isa.X86_64 (Register (..), X86_64)
 import qualified Metis.Literal as Literal
 import qualified Metis.Liveness as Liveness
 import Metis.Log (handleLogging)
+import Metis.Type (Type)
 import qualified Metis.Type as Type
 import System.IO (hClose)
 import System.IO.Temp (withSystemTempFile)
@@ -47,7 +52,7 @@ spec =
     describe "moveRegisterFunctionArguments" $ do
       it "a @ %rax, b @ %rbx |- f(b, a) : {%rbx, %rax} -> {%rax, %rbx}" $ do
         let result = flip evalState (initialInstSelectionState (generalPurposeRegisters @X86_64) mempty "main" [Global]) $ do
-              modify (\s -> s{available = Seq.filter (`notElem` [Rax, Rbx]) s.available})
+              modify (\s -> s{available = Seq.filter (`notElem` ([Rax, Rbx] :: [Register X86_64])) s.available})
               moveRegisterFunctionArguments
                 mempty
                 [ RegisterFunctionArgument{size = 8, src = ValueAt $ Register Rbx, dest = Rax}
@@ -69,7 +74,7 @@ spec =
                      ]
       it "a @ %rax, b @ %rbx |- f(b, a, b) : {%rbx, %rax, %rbx} -> {%rax, %rbx, %rcx}" $ do
         let result = flip evalState (initialInstSelectionState (generalPurposeRegisters @X86_64) mempty "main" [Global]) $ do
-              modify (\s -> s{available = Seq.filter (`notElem` [Rax, Rbx]) s.available})
+              modify (\s -> s{available = Seq.filter (`notElem` ([Rax, Rbx] :: [Register X86_64])) s.available})
               moveRegisterFunctionArguments
                 mempty
                 [ RegisterFunctionArgument{size = 8, src = ValueAt $ Register Rbx, dest = Rax}
@@ -94,26 +99,24 @@ spec =
                      ]
     describe "instSelection_X86_64" $ do
       let
-        shouldCompileTo :: (HasCallStack) => Core.Expr Void Void -> [Lazy.Text] -> IO ()
-        shouldCompileTo expr expectedOutput =
+        shouldCompileTo :: (HasCallStack) => (HashMap Text (Type Anf.Var), Core.Expr Void Void) -> [Lazy.Text] -> IO ()
+        shouldCompileTo (nameTys, expr) expectedOutput =
           withSystemTempFile "metis-instruction-selection-logs.txt" $ \tempFilePath tempFileHandle ->
             saveLogsOnFailure tempFilePath $ do
-              let (anfInfo, anf) = Anf.fromCore absurd absurd expr
+              let (anfInfo, anf) = Anf.fromCore (nameTys HashMap.!) absurd absurd expr
               let liveness = Liveness.liveness anf
-              let nameTys = \case
-                    "f" -> Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64
-                    _ -> undefined
 
               asm <-
                 fmap (printAsm printInstruction_X86_64) . runAsmBuilderT . handleLogging tempFileHandle . void $
-                  instSelection_X86_64 nameTys (generalPurposeRegisters @X86_64) anfInfo anf liveness "main" [Global]
+                  instSelection_X86_64 (nameTys HashMap.!) (generalPurposeRegisters @X86_64) anfInfo anf liveness "main" [Global]
 
               hClose tempFileHandle
 
               Builder.toLazyText asm `shouldBe` Text.Lazy.unlines expectedOutput
 
       it "f : Fn (Uint64, Uint64) Uint64 |- let x = 1; let y = 2; f(x, y)" $
-        ( Core.Let Type.Uint64 (Just "x") Type.Uint64 (Core.Literal $ Literal.Uint64 1) . toScope $
+        ( [("f", Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64)]
+        , Core.Let Type.Uint64 (Just "x") Type.Uint64 (Core.Literal $ Literal.Uint64 1) . toScope $
             Core.Let Type.Uint64 (Just "y") Type.Uint64 (Core.Literal $ Literal.Uint64 2) . toScope $
               Core.Call Type.Uint64 (Core.Name "f") [] [Core.Var . F $ B (), Core.Var $ B ()]
         )
@@ -130,7 +133,8 @@ spec =
                             ]
 
       it "f : Fn (Uint64, Uint64) Uint64 |- let x = 1; let y = 2; let z = f(x, y); x + z" $
-        ( Core.Let Type.Uint64 (Just "x") Type.Uint64 (Core.Literal $ Literal.Uint64 1) . toScope $
+        ( [("f", Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64)]
+        , Core.Let Type.Uint64 (Just "x") Type.Uint64 (Core.Literal $ Literal.Uint64 1) . toScope $
             Core.Let Type.Uint64 (Just "y") Type.Uint64 (Core.Literal $ Literal.Uint64 2) . toScope $
               Core.Let Type.Uint64 (Just "z") Type.Uint64 (Core.Call Type.Uint64 (Core.Name "f") [] [Core.Var . F $ B (), Core.Var $ B ()]) . toScope $
                 Core.Add Type.Uint64 (Core.Var . F . F $ B ()) (Core.Var $ B ())
@@ -154,7 +158,8 @@ spec =
                             ]
 
       it "f : Fn (Uint64, Uint64) Uint64 |- let x = 1; let y = 2; let z = f(y, x); x + z" $
-        ( Core.Let Type.Uint64 (Just "x") Type.Uint64 (Core.Literal $ Literal.Uint64 1) . toScope $
+        ( [("f", Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64)]
+        , Core.Let Type.Uint64 (Just "x") Type.Uint64 (Core.Literal $ Literal.Uint64 1) . toScope $
             Core.Let Type.Uint64 (Just "y") Type.Uint64 (Core.Literal $ Literal.Uint64 2) . toScope $
               Core.Let Type.Uint64 (Just "z") Type.Uint64 (Core.Call Type.Uint64 (Core.Name "f") [] [Core.Var $ B (), Core.Var . F $ B ()]) . toScope $
                 Core.Add Type.Uint64 (Core.Var . F . F $ B ()) (Core.Var $ B ())
@@ -187,7 +192,7 @@ spec =
         shouldCompileTo' available function expectedOutput =
           withSystemTempFile "metis-instruction-selection-logs.txt" $ \tempFilePath tempFileHandle ->
             saveLogsOnFailure tempFilePath $ do
-              let function' = Anf.fromFunction function
+              let function' = Anf.fromFunction (const undefined) function
               let liveness = Liveness.liveness function'.body
               let nameTys = \case
                     "f" -> Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64
