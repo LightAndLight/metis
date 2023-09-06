@@ -334,6 +334,8 @@ typeDict ty = do
           "type_Ptr"
         Type.Unit{} ->
           "type_Unit"
+        Type.Unknown{} ->
+          error "impossible: can't generate type dict for Unknown"
 
 instSelectionType_X86_64 ::
   (MonadState (InstSelectionState X86_64) m, MonadLog m) =>
@@ -355,6 +357,8 @@ instSelectionType_X86_64 ty = do
       AddressOf . Metis.InstSelection.Symbol <$> typeDict ty
     Type.Ptr{} ->
       AddressOf . Metis.InstSelection.Symbol <$> typeDict ty
+    Type.Unknown{} ->
+      error "impossible: Unknown has no type dictionary"
 
 instSelectionSimple_X86_64 ::
   (MonadState (InstSelectionState X86_64) m, MonadLog m) =>
@@ -758,6 +762,8 @@ generateTypeDict name ty =
   case ty of
     Type.Var{} ->
       error "impossible: generating type dictionary for variable"
+    Type.Unknown{} ->
+      error "impossible: generating type dictionary for Unknown"
     Type.Uint64 -> do
       copy <-
         -- Type_Uint64_copy(self : *Type, from : *Uint64, to : *Uint64)
@@ -1062,6 +1068,8 @@ copyValue ty value outputLocation =
       error "TODO: copyValue/Unit"
     Type.Ptr{} ->
       error "TODO: copyValue/Ptr"
+    Type.Unknown ->
+      error "impossible: can't copy Unknown"
 
 instSelectionFunction_X86_64 ::
   (MonadAsm X86_64 m, MonadLog m, MonadFix m) =>
@@ -1766,6 +1774,8 @@ instSelectionAlloca_X86_64 var ty = do
         allocaKnown ty
       Type.Ptr{} -> do
         allocaKnown ty
+      Type.Unknown{} -> do
+        error "impossible: can't allocate for Unknown"
   modify (\s -> s{locations = HashMap.Lazy.insert var location s.locations})
   where
     allocaKnown ty' = do
@@ -2051,6 +2061,8 @@ instSelectionStore_X86_64 _var ptr val = do
   case Anf.typeOf varKinds nameTys varTys val of
     Right Type.Var{} ->
       error "TODO: Store/Var"
+    Right Type.Unknown ->
+      error "impossible: can't store to *Unknown"
     Right Type.Uint64 ->
       case (ptr', val') of
         (ValueAt (Register ptrRegister), Literal lit) -> do
@@ -2107,6 +2119,8 @@ instSelectionLoad_X86_64 var ptr = do
   case ty of
     Type.Var{} ->
       error "TODO: Load/Var"
+    Type.Unknown ->
+      error "impossible: can't load from *Unknown"
     Type.Uint64 -> do
       location <- allocLocation $ Type.sizeOf ty
       inRegister ptr' $ \ptrRegister ->
