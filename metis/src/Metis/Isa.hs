@@ -24,6 +24,8 @@ module Metis.Isa (
   Jmp (..),
   Lea (..),
   Mov (..),
+  Load (..),
+  Store (..),
   Pop (..),
   Push (..),
   Ret (..),
@@ -96,8 +98,11 @@ data Op2 src dest = Op2 {src :: src, dest :: dest}
   deriving (Eq, Show)
 
 class Add isa src dest where add :: Op2 src dest -> Instruction isa
-class Lea isa src dest where lea :: Op2 src dest -> Instruction isa
-class Mov isa src dest where mov :: Op2 src dest -> Instruction isa
 class Sub isa src dest where sub :: Op2 src dest -> Instruction isa
 class Xor isa src dest where xor :: Op2 src dest -> Instruction isa
 class Cmp isa a b where cmp :: a -> b -> Instruction isa
+
+class Lea isa src dest where lea :: Op2 src dest -> Instruction isa
+class Mov isa a b where mov :: Op2 a b -> Instruction isa
+class Load isa where load :: Op2 (Memory isa) (Register isa) -> Instruction isa
+class Store isa where store :: Op2 (Register isa) (Memory isa) -> Instruction isa

@@ -26,12 +26,14 @@ import Metis.Isa (
   Je (..),
   Jmp (..),
   Lea (..),
+  Load (..),
   Memory,
   Mov (..),
   Op2,
   Pop (..),
   Push (..),
   Ret (..),
+  Store (..),
   Sub (..),
   Symbol (..),
   Xor (..),
@@ -142,10 +144,9 @@ class Movb a b where movb :: Op2 a b -> Instruction X86_64
 instance Movb (Register X86_64) (Memory X86_64) where movb = Inst2_rm Movb
 
 instance Mov X86_64 Immediate (Register X86_64) where mov = Inst2_ir Mov
-instance Mov X86_64 Immediate (Memory X86_64) where mov = Inst2_im Mov
 instance Mov X86_64 (Register X86_64) (Register X86_64) where mov = Inst2_rr Mov
-instance Mov X86_64 (Register X86_64) (Memory X86_64) where mov = Inst2_rm Mov
-instance Mov X86_64 (Memory X86_64) (Register X86_64) where mov = Inst2_mr Mov
+instance Store X86_64 where store = Inst2_rm Mov
+instance Load X86_64 where load = Inst2_mr Mov
 
 instance Add X86_64 Immediate (Register X86_64) where add = Inst2_ir Add
 instance Add X86_64 Immediate (Memory X86_64) where add = Inst2_im Add

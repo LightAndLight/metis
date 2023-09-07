@@ -205,6 +205,7 @@ spec =
                     Add Type.Uint64 (Add Type.Uint64 (Var . F . F $ B ()) (Var . F $ B ())) (Var $ B ())
         , availableRegisters = [Rax]
         , expectedOutput =
+            {-
             [ ".text"
             , ".global main"
             , "main:"
@@ -213,6 +214,33 @@ spec =
             , "mov $99, %rax"
             , "mov $100, -8(%rbp)"
             , "mov $101, -16(%rbp)"
+            , "add -8(%rbp), %rax"
+            , "add -16(%rbp), %rax"
+            ]
+
+            This code was simpler before I started generating code in explicit "RISC" (load-store)
+            style. When immediate->memory stores aren't allowed (meaning that an immediate has to be
+            moved into a register before it can be stored), the code uses an extra 8 bytes of
+            stack memory for a temporary storage.
+
+            Later on I can reduce the instruction count by merging a bunch of these instructions.
+            I'm not sure how to reclaim the stack space in this optimisation, though.
+            -}
+
+            [ ".text"
+            , ".global main"
+            , "main:"
+            , "mov %rsp, %rbp"
+            , "sub $24, %rsp"
+            , "mov $99, %rax"
+            , "mov %rax, -16(%rbp)"
+            , "mov $100, %rax"
+            , "mov %rax, -8(%rbp)"
+            , "mov -16(%rbp), %rax"
+            , "mov %rax, -24(%rbp)"
+            , "mov $101, %rax"
+            , "mov %rax, -16(%rbp)"
+            , "mov -24(%rbp), %rax"
             , "add -8(%rbp), %rax"
             , "add -16(%rbp), %rax"
             ]
