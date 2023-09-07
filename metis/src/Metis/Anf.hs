@@ -1,6 +1,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-ambiguous-fields #-}
 
@@ -101,7 +102,6 @@ data ExprInfo = ExprInfo
 
 data Function = Function
   { name :: Text
-  , tyArgs :: [(Var, Kind)]
   , args :: [(Var, Type Var)]
   , retTy :: Type Var
   , bodyInfo :: ExprInfo
@@ -208,7 +208,6 @@ fromFunction :: (Text -> Type Var) -> Core.Function -> Function
 fromFunction nameTys Core.Function{name, tyArgs, args, retTy, body} =
   Function
     { name
-    , tyArgs = tyArgs'
     , args = args'
     , retTy = retTy'
     , bodyInfo = ExprInfo{labelArgs, varKinds, varTys}
@@ -223,7 +222,7 @@ fromFunction nameTys Core.Function{name, tyArgs, args, retTy, body} =
             _ ->
               renamedTy
 
-    (AnfBuilderState{labelArgs, varKinds, varTys, program}, (tyArgs', args', retTy', simple)) =
+    (AnfBuilderState{labelArgs, varKinds, varTys, program}, (args', retTy', simple)) =
       runIdentity . runAnfBuilderT $ do
         tyVars <- traverse (\(_, kind) -> freshTyVar kind) tyArgs
         let renameTyVar index = tyVars !! fromIntegral @Word64 @Int index
@@ -257,10 +256,10 @@ fromFunction nameTys Core.Function{name, tyArgs, args, retTy, body} =
             _ ->
               pure body'
         pure
-          ( zipWith (\tyVar (_, kind) -> (tyVar, kind)) tyVars tyArgs
-          , case mReturnParam of
-              Nothing -> args''
-              Just returnParam -> args'' <> [(returnParam, retTy'')]
+          ( fmap (,Type.Ptr Type.Unknown) tyVars
+              <> case mReturnParam of
+                Nothing -> args''
+                Just returnParam -> args'' <> [(returnParam, retTy'')]
           , retTy''
           , result
           )
@@ -352,13 +351,15 @@ fromCoreExpr nameTys toTyVar toVar expr =
               allocaResult <- Var <$> letC (Type.Ptr instantiatedArgTy) (Alloca instantiatedArgTy)
               _ <- letC Type.Unit (Store allocaResult arg)
               pure allocaResult
+
       case (instantiatedRetTy, retTyPolymorphism) of
         (Type.Var{}, Poly) ->
           Var <$> letC ty' (Call function' (fmap Type tyArgs' <> args''))
         (_, Mono) ->
           Var <$> letC ty' (Call function' (fmap Type tyArgs' <> args''))
         (_, Poly) -> do
-          callResult <- letC (Type.Ptr ty') (Call function' (fmap Type tyArgs' <> args''))
+          retArg <- Var <$> letC (Type.Ptr instantiatedRetTy) (Alloca instantiatedRetTy)
+          callResult <- letC (Type.Ptr ty') (Call function' (fmap Type tyArgs' <> args'' <> [retArg]))
           Var <$> letC ty' (Load $ Var callResult)
   where
     instantiateFunctionType :: (ty -> Type Var) -> Type ty -> [Type Var] -> ([(Text, Kind)], [Type Var], Type Var)

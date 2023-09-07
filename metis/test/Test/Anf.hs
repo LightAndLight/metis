@@ -200,9 +200,9 @@ spec =
           }
           `anfShouldBe` Anf.Function
             { name = "id"
-            , tyArgs = [(Anf.MkVar 0, Kind.Type)]
             , args =
-                [ (Anf.MkVar 1, Type.Ptr $ Type.Var (Anf.MkVar 0))
+                [ (Anf.MkVar 0, Type.Ptr Type.Unknown)
+                , (Anf.MkVar 1, Type.Ptr $ Type.Var (Anf.MkVar 0))
                 , (Anf.MkVar 2, Type.Ptr $ Type.Var (Anf.MkVar 0))
                 ]
             , retTy = Type.Ptr $ Type.Var (Anf.MkVar 0)

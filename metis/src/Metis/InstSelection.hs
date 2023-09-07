@@ -845,7 +845,7 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
   let initial = initialInstSelectionState initialAvailable liveness function.name []
   rec let localsSize = fromIntegral @Int64 @Word64 (-s'.nextStackOffset)
       ((), s') <- runInstSelectionT nameTys function.bodyInfo initial $ do
-        (stackArgumentsSize, _mOutputLocation) <- setupArguments function.tyArgs function.args function.retTy
+        (stackArgumentsSize, _mOutputLocation) <- setupArguments function.args function.retTy
         emit [sub Op2{dest = Rsp, src = imm localsSize} | localsSize > 0]
         value <- instSelectionExpr_X86_64 mempty function.body
         case Type.callingConventionOf function.retTy of
@@ -890,116 +890,79 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
     -- TODO: this code is basically the same as `setupFunctionArguments`. Make it the same code?
     setupArguments ::
       (MonadState (InstSelectionState isa) m) =>
-      [(Anf.Var, Kind)] ->
       [(Anf.Var, Type Anf.Var)] ->
       Type Anf.Var ->
       m (Word64, Maybe (Location isa))
-    setupArguments tyArgs args retTy =
-      case tyArgs of
-        tyArg : tyArgs' -> do
-          available <- gets (.available)
-          case Seq.viewl available of
-            register Seq.:< available' -> do
-              modify
-                ( \s ->
-                    s
-                      { available = available'
-                      , locations = HashMap.insert (fst tyArg) (Register register) s.locations
-                      }
-                )
-              setupArguments tyArgs' args retTy
-            Seq.EmptyL ->
-              setupStackArguments
-                (fromIntegral @Word64 @Int64 Type.pointerSize)
-                0
-                tyArgs
-                args
-                retTy
-        [] ->
-          case args of
-            [] -> do
-              case retTy of
-                Type.Var{} -> do
-                  available <- gets (.available)
-                  case Seq.viewl available of
-                    register Seq.:< available' -> do
-                      modify (\s -> s{available = available'})
-                      pure (0, Just $ Register register)
-                    Seq.EmptyL ->
-                      setupStackArguments
-                        (fromIntegral @Word64 @Int64 Type.pointerSize)
-                        0
-                        tyArgs
-                        args
-                        retTy
-                _ ->
-                  pure (0, Nothing)
-            arg : args' -> do
-              case Type.callingConventionOf $ snd arg of
-                Type.Register -> do
-                  available <- gets (.available)
-                  case Seq.viewl available of
-                    register Seq.:< available' -> do
-                      modify
-                        ( \s ->
-                            s
-                              { available = available'
-                              , locations = HashMap.insert (fst arg) (Register register) s.locations
-                              }
-                        )
-                      setupArguments tyArgs args' retTy
-                    Seq.EmptyL ->
-                      setupStackArguments
-                        (fromIntegral @Word64 @Int64 Type.pointerSize)
-                        0
-                        tyArgs
-                        args -- we couldn't allocate register for `arg`, so try again with the stack
-                        retTy
-                Type.Composite{} ->
-                  error "TODO: composite function arguments"
-                Type.Erased ->
-                  error "TODO: erased function arguments"
+    setupArguments args retTy =
+      case args of
+        [] -> do
+          case retTy of
+            Type.Var{} -> do
+              available <- gets (.available)
+              case Seq.viewl available of
+                register Seq.:< available' -> do
+                  modify (\s -> s{available = available'})
+                  pure (0, Just $ Register register)
+                Seq.EmptyL ->
+                  setupStackArguments
+                    (fromIntegral @Word64 @Int64 Type.pointerSize)
+                    0
+                    args
+                    retTy
+            _ ->
+              pure (0, Nothing)
+        arg : args' -> do
+          case Type.callingConventionOf $ snd arg of
+            Type.Register -> do
+              available <- gets (.available)
+              case Seq.viewl available of
+                register Seq.:< available' -> do
+                  modify
+                    ( \s ->
+                        s
+                          { available = available'
+                          , locations = HashMap.insert (fst arg) (Register register) s.locations
+                          }
+                    )
+                  setupArguments args' retTy
+                Seq.EmptyL ->
+                  setupStackArguments
+                    (fromIntegral @Word64 @Int64 Type.pointerSize)
+                    0
+                    args -- we couldn't allocate register for `arg`, so try again with the stack
+                    retTy
+            Type.Composite{} ->
+              error "TODO: composite function arguments"
+            Type.Erased ->
+              error "TODO: erased function arguments"
 
     setupStackArguments ::
       (MonadState (InstSelectionState isa) m) =>
       Int64 ->
       Word64 ->
-      [(Anf.Var, Kind)] ->
       [(Anf.Var, Type Anf.Var)] ->
       Type Anf.Var ->
       m (Word64, Maybe (Location isa))
-    setupStackArguments offset size tyArgs args retTy =
-      case tyArgs of
-        (tyArgVar, _tyArgKind) : tyArgs' -> do
-          modify (\s -> s{locations = HashMap.insert tyArgVar (Stack offset) s.locations})
-          let tyArgSize = Type.pointerSize
-          setupStackArguments
-            (offset + fromIntegral @Word64 @Int64 tyArgSize)
-            (size + tyArgSize)
-            tyArgs'
-            args
-            retTy
-        [] ->
-          case args of
-            [] -> do
-              case retTy of
-                Type.Var{} ->
-                  pure (size + Type.pointerSize, Just $ Stack offset)
-                _ ->
-                  pure (size, Nothing)
-            (argVar, argTy) : args' ->
-              case Type.callingConventionOf argTy of
-                Type.Register -> do
-                  modify (\s -> s{locations = HashMap.insert argVar (Stack offset) s.locations})
-                  let argTySize = Type.sizeOf argTy
-                  setupStackArguments
-                    (offset + fromIntegral @Word64 @Int64 argTySize)
-                    (size + argTySize)
-                    tyArgs
-                    args'
-                    retTy
-                Type.Composite{} -> error "TODO: composite stack function arguments"
-                Type.Erased -> error "TODO: erased stack function arguments"
+    setupStackArguments offset size args retTy =
+      case args of
+        [] -> do
+          case retTy of
+            Type.Var{} ->
+              pure (size + Type.pointerSize, Just $ Stack offset)
+            _ ->
+              pure (size, Nothing)
+        (argVar, argTy) : args' ->
+          case Type.callingConventionOf argTy of
+            Type.Register -> do
+              modify (\s -> s{locations = HashMap.insert argVar (Stack offset) s.locations})
+              let argTySize = Type.sizeOf argTy
+              setupStackArguments
+                (offset + fromIntegral @Word64 @Int64 argTySize)
+                (size + argTySize)
+                args'
+                retTy
+            Type.Composite{} -> error "TODO: composite stack function arguments"
+            Type.Erased -> error "TODO: erased stack function arguments"
 
 instSelectionExpr_X86_64 ::
   (MonadState (InstSelectionState X86_64) m, MonadReader (InstSelectionEnv X86_64) m, MonadLog m) =>
@@ -1340,9 +1303,8 @@ classifyArguments varKinds nameTys varTys ty args =
               <> show (length argTys)
               <> ", got "
               <> show (length args)
-              <> "("
+              <> ": "
               <> show args
-              <> ")"
         else
           ClassifiedArguments
             { typeArgs = []
@@ -1760,56 +1722,6 @@ inRegister value f = do
   a <- f register
   freeRegister
   pure a
-
-{-
-inRegister2 ::
-  forall isa m a.
-  ( MonadState (InstSelectionState isa) m
-  , Isa isa
-  , Mov isa (Register isa) (Register isa)
-  , Mov isa (Memory isa) (Register isa)
-  , Mov isa (Register isa) (Memory isa)
-  , Mov isa Immediate (Register isa)
-  , Lea isa (Memory isa) (Register isa)
-  ) =>
-  Value isa ->
-  Value isa ->
-  (Register isa -> Register isa -> m a) ->
-  m a
-inRegister2 value1 value2 f = do
-  (registers, freeRegister) <-
-    case (value1, value2) of
-      (ValueAt (Register register1), ValueAt (Register register2)) ->
-        pure ([register1, register2], pure ())
-      (ValueAt (Register register1), ValueAt Stack{}) -> do
-        (register2, free) <- allocTempRegister
-        pure ([register1, register2], free)
-      (ValueAt (Register register1), AddressOf _) -> do
-        (register2, free) <- allocTempRegister
-        pure ([register1, register2], free)
-      (ValueAt Stack{}, ValueAt (Register register2)) -> do
-        (register1, free) <- allocTempRegister
-        pure ([register1, register2], free)
-      (ValueAt Stack{}, ValueAt Stack{}) ->
-        allocTempRegisters 2
-      (ValueAt Stack{}, AddressOf _) ->
-        allocTempRegisters 2
-      (AddressOf _, ValueAt (Register register2)) -> do
-        (register1, free) <- allocTempRegister
-        pure ([register1, register2], free)
-      (AddressOf _, ValueAt Stack{}) ->
-        allocTempRegisters 2
-      (AddressOf _, AddressOf _) ->
-        allocTempRegisters 2
-  case registers of
-    [register1, register2] -> do
-      emit $ mov_vr value1 register1 <> mov_vr value2 register2
-      a <- f register1 register2
-      freeRegister
-      pure a
-    _ ->
-      undefined
--}
 
 instSelectionStore_X86_64 ::
   (MonadState (InstSelectionState X86_64) m, MonadReader (InstSelectionEnv X86_64) m, MonadLog m) =>

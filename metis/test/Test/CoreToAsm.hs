@@ -11,7 +11,7 @@ import Bound.Scope.Simple (toScope)
 import Bound.Var (Var (..))
 import Data.Buildable (collectL')
 import Data.CallStack (HasCallStack)
-import Data.Foldable (for_, traverse_)
+import Data.Foldable (traverse_)
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 import qualified Data.Maybe as Maybe
@@ -19,6 +19,7 @@ import Data.Sequence (Seq)
 import qualified Data.Text.Lazy as Text.Lazy
 import Data.Text.Lazy.Builder (Builder)
 import qualified Data.Text.Lazy.Builder as Text.Lazy.Builder
+import Data.Traversable (for)
 import Data.Void (Void, absurd)
 import ErrorReporting (saveLogsOnFailure)
 import qualified Metis.Anf as Anf
@@ -33,7 +34,7 @@ import qualified Metis.Kind as Kind
 import qualified Metis.Literal as Literal
 import qualified Metis.Liveness as Liveness
 import Metis.Log (handleLogging)
-import qualified Metis.Type as Type (Type (..), forall_)
+import qualified Metis.Type as Type
 import System.Exit (ExitCode (..))
 import System.IO (hClose)
 import System.IO.Temp (withSystemTempFile)
@@ -58,21 +59,29 @@ testCase :: TestCase -> SpecWith ()
 testCase TestCase{title, enabled, definitions, expr, availableRegisters, expectedOutput} =
   (if enabled then it else xit) title . withSystemTempFile "metis-coretoasm-logs.txt" $ \tempFilePath tempFileHandle -> saveLogsOnFailure tempFilePath $ do
     asm <- fmap (Text.Lazy.Builder.toLazyText . printAsm printInstruction_X86_64) . runAsmBuilderT . handleLogging tempFileHandle $ do
-      let nameTysMap =
+      let coreNameTysMap =
             collectL' @(HashMap _ _) $
               fmap (\Function{name, tyArgs, args, retTy} -> (name, Type.forall_ tyArgs $ Type.Fn (fmap snd args) retTy)) definitions
-      let nameTys name = Maybe.fromMaybe (error $ show name <> " missing from name types map") $ HashMap.lookup name nameTysMap
+      let coreNameTys name = Maybe.fromMaybe (error $ show name <> " missing from name types map") $ HashMap.lookup name coreNameTysMap
 
-      for_ definitions $ \function -> do
-        let function' = Anf.fromFunction nameTys function
-        let liveness = Liveness.liveness function'.body
-        instSelectionFunction_X86_64 nameTys availableRegisters liveness function'
+      definitions' <- do
+        for definitions $ \function -> do
+          let function' = Anf.fromFunction coreNameTys function
+          let liveness = Liveness.liveness function'.body
+          instSelectionFunction_X86_64 coreNameTys availableRegisters liveness function'
+          pure function'
+
+      let (anfInfo, anf) = Anf.fromCore coreNameTys absurd absurd expr
+      let liveness = Liveness.liveness anf
+
+      let anfNameTysMap =
+            collectL' @(HashMap _ _) $
+              fmap (\Anf.Function{name, args, retTy} -> (name, Type.Fn (fmap snd args) retTy)) definitions'
+      let anfNameTys name = Maybe.fromMaybe (error $ show name <> " missing from name types map") $ HashMap.lookup name anfNameTysMap
 
       _ <- do
-        let (anfInfo, anf) = Anf.fromCore nameTys absurd absurd expr
-        let liveness = Liveness.liveness anf
         instSelection_X86_64
-          nameTys
+          anfNameTys
           availableRegisters
           anfInfo
           anf
