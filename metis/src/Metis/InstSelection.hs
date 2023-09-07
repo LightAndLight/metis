@@ -10,6 +10,7 @@
 
 module Metis.InstSelection (
   instSelection_X86_64,
+  instSelectionEntrypoint_X86_64,
   instSelectionFunction_X86_64,
 
   -- * Internals
@@ -48,7 +49,7 @@ import Data.Traversable (for)
 import Data.Word (Word64, Word8)
 import GHC.Stack (HasCallStack)
 import qualified Metis.Anf as Anf
-import Metis.Asm (Block (..), BlockAttribute, Statement (..))
+import Metis.Asm (Block (..), BlockAttribute (..), Statement (..))
 import qualified Metis.Asm as Asm (quad)
 import Metis.Asm.Class (MonadAsm)
 import qualified Metis.Asm.Class as Asm
@@ -833,6 +834,37 @@ generateTypeDict name ty =
         ]
     Type.Ptr{} ->
       error "TODO: generateTypeDict/Ptr"
+
+instSelectionEntrypoint_X86_64 ::
+  (MonadAsm X86_64 m, MonadLog m, MonadFix m) =>
+  (Text -> Type Anf.Var) ->
+  Seq (Register X86_64) ->
+  HashMap Anf.Var Liveness ->
+  Text ->
+  Anf.Expr ->
+  Anf.ExprInfo ->
+  m (Value X86_64)
+instSelectionEntrypoint_X86_64 nameTys initialAvailable liveness name expr exprInfo = do
+  let initial = initialInstSelectionState initialAvailable liveness name [Global]
+  rec let localsSize = fromIntegral @Int64 @Word64 (-s'.nextStackOffset)
+      (value, s') <- runInstSelectionT nameTys exprInfo initial $ do
+        emit [mov Op2{src = Rsp, dest = Rbp}]
+        emit [sub Op2{dest = Rsp, src = imm localsSize} | localsSize > 0]
+        instSelectionExpr_X86_64 mempty expr
+
+  ifor_ s'.typeDicts generateTypeDict
+
+  traverse_
+    (\Block{label, attributes, statements} -> Asm.block label attributes statements)
+    s'.previousBlocks
+
+  _ <-
+    Asm.block
+      s'.currentBlockName
+      s'.currentBlockAttributes
+      s'.currentBlockStatements
+
+  pure value
 
 instSelectionFunction_X86_64 ::
   (MonadAsm X86_64 m, MonadLog m, MonadFix m) =>

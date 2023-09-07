@@ -3,6 +3,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Test.CoreToAsm (spec) where
@@ -11,7 +12,7 @@ import Bound.Scope.Simple (toScope)
 import Bound.Var (Var (..))
 import Data.Buildable (collectL')
 import Data.CallStack (HasCallStack)
-import Data.Foldable (traverse_)
+import Data.Foldable (for_, traverse_)
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 import qualified Data.Maybe as Maybe
@@ -19,15 +20,14 @@ import Data.Sequence (Seq)
 import qualified Data.Text.Lazy as Text.Lazy
 import Data.Text.Lazy.Builder (Builder)
 import qualified Data.Text.Lazy.Builder as Text.Lazy.Builder
-import Data.Traversable (for)
-import Data.Void (Void, absurd)
+import Data.Void (absurd)
 import ErrorReporting (saveLogsOnFailure)
 import qualified Metis.Anf as Anf
 import Metis.Asm (printAsm)
 import Metis.Asm.Builder (runAsmBuilderT)
 import Metis.Codegen (printInstruction_X86_64)
 import Metis.Core (Expr (..), Function (..))
-import Metis.InstSelection (instSelectionFunction_X86_64, instSelection_X86_64)
+import Metis.InstSelection (instSelectionEntrypoint_X86_64, instSelectionFunction_X86_64)
 import Metis.Isa (generalPurposeRegisters)
 import Metis.Isa.X86_64 (Register (..), X86_64)
 import qualified Metis.Kind as Kind
@@ -49,7 +49,7 @@ data TestCase where
     { title :: String
     , enabled :: Bool
     , definitions :: [Function]
-    , expr :: Expr Void Void
+    , expr :: forall ty tm. Expr ty tm
     , availableRegisters :: Seq (Register X86_64)
     , expectedOutput :: [Builder]
     } ->
@@ -64,32 +64,23 @@ testCase TestCase{title, enabled, definitions, expr, availableRegisters, expecte
               fmap (\Function{name, tyArgs, args, retTy} -> (name, Type.forall_ tyArgs $ Type.Fn (fmap snd args) retTy)) definitions
       let coreNameTys name = Maybe.fromMaybe (error $ show name <> " missing from name types map") $ HashMap.lookup name coreNameTysMap
 
-      definitions' <- do
-        for definitions $ \function -> do
-          let function' = Anf.fromFunction coreNameTys function
-          let liveness = Liveness.liveness function'.body
-          instSelectionFunction_X86_64 coreNameTys availableRegisters liveness function'
-          pure function'
-
+      let anfDefinitions = fmap (Anf.fromFunction coreNameTys) definitions
       let (anfInfo, anf) = Anf.fromCore coreNameTys absurd absurd expr
-      let liveness = Liveness.liveness anf
 
       let anfNameTysMap =
             collectL' @(HashMap _ _) $
-              fmap (\Anf.Function{name, args, retTy} -> (name, Type.Fn (fmap snd args) retTy)) definitions'
+              fmap (\Anf.Function{name, args, retTy} -> (name, Type.Fn (fmap snd args) retTy)) anfDefinitions
       let anfNameTys name = Maybe.fromMaybe (error $ show name <> " missing from name types map") $ HashMap.lookup name anfNameTysMap
 
-      _ <- do
-        instSelection_X86_64
-          anfNameTys
-          availableRegisters
-          anfInfo
-          anf
-          liveness
-          "main"
-          []
+      for_ anfDefinitions $ \anfFunction -> do
+        let liveness = Liveness.liveness anfFunction.body
+        instSelectionFunction_X86_64 anfNameTys availableRegisters liveness anfFunction
+
+      let liveness = Liveness.liveness anf
+      _ <- instSelectionEntrypoint_X86_64 anfNameTys availableRegisters liveness "main" anf anfInfo
 
       pure ()
+
     hClose tempFileHandle
     asm `shouldBe` Text.Lazy.Builder.toLazyText (foldMap @[] (<> "\n") expectedOutput)
 
@@ -121,7 +112,9 @@ spec =
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
             [ ".text"
+            , ".global main"
             , "main:"
+            , "mov %rsp, %rbp"
             , "mov $99, %rax"
             , "add $99, %rax"
             ]
@@ -139,7 +132,9 @@ spec =
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
             [ ".text"
+            , ".global main"
             , "main:"
+            , "mov %rsp, %rbp"
             , "mov $99, %rax"
             , "add %rax, %rax"
             ]
@@ -159,7 +154,9 @@ spec =
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
             [ ".text"
+            , ".global main"
             , "main:"
+            , "mov %rsp, %rbp"
             , "mov $99, %rax"
             , "mov $100, %rbx"
             , "add %rbx, %rax"
@@ -182,7 +179,9 @@ spec =
         , availableRegisters = generalPurposeRegisters @X86_64
         , expectedOutput =
             [ ".text"
+            , ".global main"
             , "main:"
+            , "mov %rsp, %rbp"
             , "mov $99, %rax"
             , "mov $100, %rbx"
             , "mov $101, %rcx"
@@ -207,7 +206,10 @@ spec =
         , availableRegisters = [Rax]
         , expectedOutput =
             [ ".text"
+            , ".global main"
             , "main:"
+            , "mov %rsp, %rbp"
+            , "sub $16, %rsp"
             , "mov $99, %rax"
             , "mov $100, -8(%rbp)"
             , "mov $101, -16(%rbp)"
@@ -259,7 +261,9 @@ spec =
           -}
           expectedOutput =
             [ ".text"
+            , ".global main"
             , "main:"
+            , "mov %rsp, %rbp"
             , "mov $1, %rax"
             , "cmp $0, %rax"
             , "je else"
@@ -302,7 +306,9 @@ spec =
             %3
             -}
             [ ".text"
+            , ".global main"
             , "main:"
+            , "mov %rsp, %rbp"
             , "mov $3, %rax"
             , "mov $1, %rbx"
             , "cmp $0, %rbx"
@@ -352,7 +358,9 @@ spec =
               %2 = f(%0, %1)
               %3 = 3 + %2
               -}
-              "main:"
+              ".global main"
+            , "main:"
+            , "mov %rsp, %rbp"
             , "mov $1, %rax"
             , "mov $2, %rbx"
             , "push $after"
@@ -399,7 +407,9 @@ spec =
               %2 = f(%0, %1)
               %3 = %0 + %2
               -}
-              "main:"
+              ".global main"
+            , "main:"
+            , "mov %rsp, %rbp"
             , "mov $1, %rax"
             , "mov $2, %rbx"
             , "push %rax"
@@ -453,7 +463,9 @@ spec =
                 ]
 
               fnMain =
-                [ "main:"
+                [ ".global main"
+                , "main:"
+                , "mov %rsp, %rbp"
                 -- , "mov $0, %rax"
                 ]
              in
@@ -518,7 +530,8 @@ spec =
                 ]
 
               fnMain =
-                [ "main:"
+                [ ".global main"
+                , "main:"
                 , "mov %rsp, %rbp"
                 , "sub $16, %rsp" -- allocate locals
                 , "mov $99, -8(%rbp)"

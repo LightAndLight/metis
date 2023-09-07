@@ -31,12 +31,12 @@ import Data.Void (Void, absurd)
 import Data.Word (Word64)
 import qualified Metis.Anf as Anf
 import Metis.Asm (Statement (..))
-import qualified Metis.Asm as Asm (BlockAttribute (..), printAsm)
+import qualified Metis.Asm as Asm (printAsm)
 import qualified Metis.Asm.Builder as Asm (runAsmBuilderT)
 import qualified Metis.Asm.Class as Asm (block, string)
 import Metis.Codegen (printInstruction_X86_64)
 import qualified Metis.Core as Core
-import Metis.InstSelection (Address (..), Location (..), Value (..), instSelectionFunction_X86_64, instSelection_X86_64)
+import Metis.InstSelection (Address (..), Location (..), Value (..), instSelectionEntrypoint_X86_64, instSelectionFunction_X86_64)
 import Metis.Isa (Memory (..), MemoryBase (..), Op2 (..), Symbol (..), call, generalPurposeRegisters, imm, lea, mov, xor)
 import Metis.Isa.X86_64 (Register (..), X86_64)
 import qualified Metis.Liveness as Liveness
@@ -151,34 +151,42 @@ compile buildDir definitions expr outPath = do
   let programName = FilePath.takeBaseName outPath
 
   let
-    nameTysMap :: HashMap Text (Type a)
-    nameTysMap =
+    coreNameTysMap :: HashMap Text (Type a)
+    coreNameTysMap =
       collectL' @(HashMap _ _) $
         fmap
           ( \Core.Function{name, tyArgs, args, retTy} ->
               (name, Type.forall_ tyArgs (Type.Fn (fmap snd args) retTy))
           )
           definitions
-  let
-    nameTys :: Text -> Type a
-    nameTys name = Maybe.fromMaybe (error $ show name <> " missing from name types map") $ HashMap.lookup name nameTysMap
+
+    coreNameTys :: Text -> Type a
+    coreNameTys name = Maybe.fromMaybe (error $ show name <> " missing from core name types map") $ HashMap.lookup name coreNameTysMap
+
   let availableRegisters = generalPurposeRegisters @X86_64
   asm <- fmap (Asm.printAsm printInstruction_X86_64) . Asm.runAsmBuilderT . noLogging $ do
-    for_ definitions $ \function -> do
-      let function' = Anf.fromFunction nameTys function
-      let liveness = Liveness.liveness function'.body
-      instSelectionFunction_X86_64 nameTys availableRegisters liveness function'
+    let anfDefinitions = fmap (Anf.fromFunction coreNameTys) definitions
+
+    let
+      anfNameTysMap :: HashMap Text (Type Anf.Var)
+      anfNameTysMap =
+        collectL' @(HashMap _ _) $
+          fmap
+            (\Anf.Function{name, args, retTy} -> (name, Type.Fn (fmap snd args) retTy))
+            anfDefinitions
+
+      anfNameTys :: Text -> Type Anf.Var
+      anfNameTys name = Maybe.fromMaybe (error $ show name <> " missing from anf name types map") $ HashMap.lookup name anfNameTysMap
+
+    for_ anfDefinitions $ \anfFunction -> do
+      let liveness = Liveness.liveness anfFunction.body
+      instSelectionFunction_X86_64 anfNameTys availableRegisters liveness anfFunction
+
     resultValue <- do
-      let (anfInfo, anf) = Anf.fromCore nameTys absurd absurd expr
+      let (anfInfo, anf) = Anf.fromCore anfNameTys absurd absurd expr
       let liveness = Liveness.liveness anf
-      instSelection_X86_64
-        nameTys
-        availableRegisters
-        anfInfo
-        anf
-        liveness
-        "main"
-        [Asm.Global]
+      instSelectionEntrypoint_X86_64 anfNameTys availableRegisters liveness "main" anf anfInfo
+
     formatString <- Asm.string "%u\n"
     _ <-
       Asm.block
