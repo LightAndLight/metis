@@ -125,11 +125,7 @@ spec =
                             , "main:"
                             , "mov $1, %rax"
                             , "mov $2, %rbx"
-                            , "push $after"
-                            , "push %rbp"
-                            , "mov %rsp, %rbp"
-                            , "jmp f"
-                            , "after:"
+                            , "call f"
                             ]
 
       it "f : Fn (Uint64, Uint64) Uint64 |- let x = 1; let y = 2; let z = f(x, y); x + z" $
@@ -145,11 +141,7 @@ spec =
                             , "mov $1, %rax"
                             , "mov $2, %rbx"
                             , "push %rax"
-                            , "push $after"
-                            , "push %rbp"
-                            , "mov %rsp, %rbp"
-                            , "jmp f"
-                            , "after:"
+                            , "call f"
                             , -- move result out of the way
                               -- `%rbx` is killed by the call, so is the next candidate
                               "mov %rax, %rbx"
@@ -170,16 +162,12 @@ spec =
                             , "mov $1, %rax"
                             , "mov $2, %rbx"
                             , "push %rax"
-                            , "push $after"
                             , -- begin argument setup
                               "mov %rax, %rcx"
                             , "mov %rbx, %rax"
                             , "mov %rcx, %rbx"
                             , -- end argument setup
-                              "push %rbp"
-                            , "mov %rsp, %rbp"
-                            , "jmp f"
-                            , "after:"
+                              "call f"
                             , -- move result out of the way
                               -- `%rbx` is killed by the call, so is the next allocation candidate
                               "mov %rax, %rbx"
@@ -219,6 +207,8 @@ spec =
           }
           `shouldCompileTo` [ ".text"
                             , "f:"
+                            , "push %rbp"
+                            , "mov %rsp, %rbp"
                             , "add %rbx, %rax"
                             , "pop %rbp"
                             , "ret"
@@ -236,11 +226,12 @@ spec =
             }
           [ ".text"
           , "f:"
+          , "push %rbp"
+          , "mov %rsp, %rbp"
           , -- `y` is passed via stack
             "add 8(%rbp), %rax"
           , "pop %rbp"
-          , "add $8, %rsp" -- deallocate `y`
-          , "ret"
+          , "ret $8"
           ]
 
       it "f(x : Uint64, y : Uint64, z : Uint64) : Uint64 = x + y + z (only %rax available)" $
@@ -255,12 +246,13 @@ spec =
             }
           [ ".text"
           , "f:"
+          , "push %rbp"
+          , "mov %rsp, %rbp"
           , -- `x` is passed in register at %rax
             -- `y` is passed via stack at 8(%rbp)
             -- `z` is passed via stack at 16(%rbp)
             "add 8(%rbp), %rax"
           , "add 16(%rbp), %rax"
           , "pop %rbp"
-          , "add $16, %rsp" -- deallocate `y` and `z`
-          , "ret"
+          , "ret $16"
           ]

@@ -6,11 +6,11 @@ Note: assumes 64 bit pointer size.
 
 | Offset from `rbp`                                           | Value                 |
 | ----------------------------------------------------------- | --------------------- |
-| offset_of(stack argument n) + size_of(stack argument n)     | return address        |
 | offset_of(stack argument n-1) + size_of(stack argument n-1) | stack argument n      |
 | ...                                                         | ...                   |
 | offset_of(stack argument 0) + size_of(stack argument 0)     | stack argument 1      |
-| 8                                                           | stack argument 0      |
+| 16                                                          | stack argument 0      |
+| 8                                                           | return address        |
 | 0                                                           | caller's base pointer |
 | -size_of(stack local 1)                                     | stack local 0         |
 | offset_of(stack local 0) - size_of(stack local 1)           | stack local 1         |
@@ -40,12 +40,10 @@ When an output must be passed via the stack, the function recieves an extra poin
 ### Pre-call
 
 1. Save call-clobbered registers
-1. Push return address
 1. Set up inputs
    * Move arguments into correct registers
    * Push arguments to stack when required
-1. Push `rbp`
-1. Set `rbp` to `rsp`
+1. Push return address
 
 ### Post-return
 
@@ -56,6 +54,8 @@ When an output must be passed via the stack, the function recieves an extra poin
 
 ### Post-call
 
+1. Push `rbp`
+1. Set `rbp` to `rsp`
 1. Allocate stack space for locals
 
 ### Pre-return
@@ -65,4 +65,3 @@ When an output must be passed via the stack, the function recieves an extra poin
    * Store results in output pointers when required
 1. Free locals
 1. Pop `rbp`
-1. Free stack arguments

@@ -66,11 +66,13 @@ instance Isa X86_64 where
     | Push_i Immediate
     | Pop_r (Register X86_64)
     | Call_s Symbol
+    | Call_r (Register X86_64)
     | Je_s Symbol
     | Jmp_s Symbol
     | Jmp_r (Register X86_64)
     | Jmp_m (Memory X86_64)
     | Ret
+    | Ret_i Immediate
     | Inst2_ir Inst2 (Op2 Immediate (Register X86_64))
     | Inst2_im Inst2 (Op2 Immediate (Memory X86_64))
     | Inst2_rr Inst2 (Op2 (Register X86_64) (Register X86_64))
@@ -176,6 +178,7 @@ instance Push X86_64 Immediate where push = Push_i
 instance Pop X86_64 (Register X86_64) where pop = Pop_r
 
 instance Call X86_64 Symbol where call = Call_s
+instance Call X86_64 (Register X86_64) where call = Call_r
 
 instance Je X86_64 Symbol where je = Je_s
 
@@ -184,3 +187,4 @@ instance Jmp X86_64 (Register X86_64) where jmp = Jmp_r
 instance Jmp X86_64 (Memory X86_64) where jmp = Jmp_m
 
 instance Ret X86_64 () where ret () = Ret
+instance Ret X86_64 Immediate where ret = Ret_i

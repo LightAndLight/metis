@@ -347,6 +347,8 @@ spec =
         , expectedOutput =
             [ ".text"
             , "f:"
+            , "push %rbp"
+            , "mov %rsp, %rbp"
             , -- `x` is in `rax`
               -- `y` is in `rbx`
               "add %rbx, %rax"
@@ -363,11 +365,7 @@ spec =
             , "mov %rsp, %rbp"
             , "mov $1, %rax"
             , "mov $2, %rbx"
-            , "push $after"
-            , "push %rbp"
-            , "mov %rsp, %rbp"
-            , "jmp f"
-            , "after:"
+            , "call f"
             , "mov $3, %rbx"
             , "add %rax, %rbx"
             ]
@@ -396,6 +394,8 @@ spec =
         , expectedOutput =
             [ ".text"
             , "f:"
+            , "push %rbp"
+            , "mov %rsp, %rbp"
             , -- `x` is in `rax`
               -- `y` is in `rbx`
               "add %rbx, %rax"
@@ -413,11 +413,7 @@ spec =
             , "mov $1, %rax"
             , "mov $2, %rbx"
             , "push %rax"
-            , "push $after"
-            , "push %rbp"
-            , "mov %rsp, %rbp"
-            , "jmp f"
-            , "after:"
+            , "call f"
             , "mov %rax, %rbx"
             , "pop %rax"
             , "add %rbx, %rax"
@@ -441,6 +437,8 @@ spec =
             let
               fnId =
                 [ "id:"
+                , "push %rbp"
+                , "mov %rsp, %rbp"
                 , -- id : forall a. a -> a
                   --
                   -- In C: void id(Type* a, void* x, void* out)
@@ -449,15 +447,8 @@ spec =
                   -- rbx <- x
                   -- rcx <- out
                   "mov 8(%rax), %rdx" -- load the `move` function pointer
-                  -- begin: call `move` function pointer
-                , "push $after"
-                , "push %rbp"
-                , "mov %rsp, %rbp"
-                , "jmp *%rdx"
-                , -- end: call `move`
-                  "after:"
-                , -- return
-                  -- return value is already in `rax`
+                , "call *%rdx"
+                , -- return value is already in `rax`
                   "pop %rbp"
                 , "ret"
                 ]
@@ -466,7 +457,6 @@ spec =
                 [ ".global main"
                 , "main:"
                 , "mov %rsp, %rbp"
-                -- , "mov $0, %rax"
                 ]
              in
               [".text"]
@@ -499,6 +489,8 @@ spec =
 
               moveUint64 =
                 [ "Type_Uint64_move:"
+                , "push %rbp"
+                , "mov %rsp, %rbp"
                 , -- rax: self
                   -- rbx: from (pointer)
                   -- rcx: to (pointer)
@@ -512,19 +504,14 @@ spec =
 
               fnId =
                 [ "id:" -- (a : Type, x : a) -> a
+                , "push %rbp"
+                , "mov %rsp, %rbp"
                 , -- `a : Type` is in `rax`
                   -- `x : a` is in `rbx`
                   -- result destination is in `rcx`
                   "mov 8(%rax), %rdx" -- load the `move` function pointer
-                  -- begin: call `move`
-                , "push $after"
-                , "push %rbp"
-                , "mov %rsp, %rbp"
-                , "jmp *%rdx"
-                , -- end: call `move`
-                  "after:"
-                , -- return
-                  -- return value is already in `rax`
+                , "call *%rdx"
+                , -- return value is already in `rax`
                   "pop %rbp"
                 , "ret"
                 ]
@@ -535,17 +522,11 @@ spec =
                 , "mov %rsp, %rbp"
                 , "sub $16, %rsp" -- allocate locals
                 , "mov $99, -8(%rbp)"
-                , "push $after"
                 , -- set up arguments
                   "mov $type_Uint64, %rax" -- address of Uint64 type dictionary
                 , "lea -8(%rbp), %rbx" -- argument passed via stack
                 , "lea -16(%rbp), %rcx" -- result passed via stack
-                -- begin: call `id`
-                , "push %rbp"
-                , "mov %rsp, %rbp"
-                , "jmp id"
-                , -- end: call `id`
-                  "after:"
+                , "call id"
                 , "add $1, (%rax)"
                 ]
              in

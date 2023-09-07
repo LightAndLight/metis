@@ -67,6 +67,7 @@ import Metis.Isa (
   Sub,
   Symbol (..),
   add,
+  call,
   cmp,
   framePointerRegister,
   imm,
@@ -769,7 +770,9 @@ generateTypeDict name ty =
       move <-
         -- Type_Uint64_move(self : *Type, from : *Uint64, to : *Uint64)
         Asm.block "Type_Uint64_move" [] . fmap Instruction $
-          [ mov Op2{src = Mem{base = BaseRegister Rbx, offset = 0}, dest = Rdx}
+          [ push Rbp
+          , mov Op2{src = Rsp, dest = Rbp}
+          , mov Op2{src = Mem{base = BaseRegister Rbx, offset = 0}, dest = Rdx}
           , mov Op2{src = Rdx, dest = Mem{base = BaseRegister Rcx, offset = 0}}
           , mov Op2{src = Rcx, dest = Rax}
           , pop Rbp
@@ -783,7 +786,9 @@ generateTypeDict name ty =
     Type.Bool -> do
       move <-
         Asm.block "Type_Bool_move" [] . fmap Instruction $
-          [ movzbq Op2{src = Mem{base = BaseRegister Rbx, offset = 0}, dest = Rdx}
+          [ push Rbp
+          , mov Op2{src = Rsp, dest = Rbp}
+          , movzbq Op2{src = Mem{base = BaseRegister Rbx, offset = 0}, dest = Rdx}
           , movb Op2{src = Dl, dest = Mem{base = BaseRegister Rcx, offset = 0}}
           , mov Op2{src = Rcx, dest = Rax}
           , pop Rbp
@@ -797,7 +802,9 @@ generateTypeDict name ty =
     Type.Fn{} -> do
       move <-
         Asm.block "Type_Fn_move" [] . fmap Instruction $
-          [ mov Op2{src = Mem{base = BaseRegister Rbx, offset = 0}, dest = Rdx}
+          [ push Rbp
+          , mov Op2{src = Rsp, dest = Rbp}
+          , mov Op2{src = Mem{base = BaseRegister Rbx, offset = 0}, dest = Rdx}
           , mov Op2{src = Rdx, dest = Mem{base = BaseRegister Rcx, offset = 0}}
           , mov Op2{src = Rcx, dest = Rax}
           , pop Rbp
@@ -811,7 +818,9 @@ generateTypeDict name ty =
     Type.Forall{} -> do
       move <-
         Asm.block "Type_Forall_move" [] . fmap Instruction $
-          [ mov Op2{src = Mem{base = BaseRegister Rbx, offset = 0}, dest = Rdx}
+          [ push Rbp
+          , mov Op2{src = Rsp, dest = Rbp}
+          , mov Op2{src = Mem{base = BaseRegister Rbx, offset = 0}, dest = Rdx}
           , mov Op2{src = Rdx, dest = Mem{base = BaseRegister Rcx, offset = 0}}
           , mov Op2{src = Rcx, dest = Rax}
           , pop Rbp
@@ -825,7 +834,7 @@ generateTypeDict name ty =
         ]
     Type.Unit -> do
       move <-
-        Asm.block "Type_Unit_move" [] $ fmap Instruction [pop Rbp, ret ()]
+        Asm.block "Type_Unit_move" [] $ fmap Instruction [ret ()]
       Asm.block
         name.value
         []
@@ -878,6 +887,7 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
   rec let localsSize = fromIntegral @Int64 @Word64 (-s'.nextStackOffset)
       ((), s') <- runInstSelectionT nameTys function.bodyInfo initial $ do
         (stackArgumentsSize, _mOutputLocation) <- setupArguments function.args function.retTy
+        emit [push Rbp, mov Op2{src = Rsp, dest = Rbp}]
         emit [sub Op2{dest = Rsp, src = imm localsSize} | localsSize > 0]
         value <- instSelectionExpr_X86_64 mempty function.body
         case Type.callingConventionOf function.retTy of
@@ -896,14 +906,12 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
                   [mov Op2{src = imm lit, dest = Rax}]
           Type.Composite{} -> error "TODO: composite return values"
           Type.Erased -> error "TODO: erased return values"
+        emit [sub Op2{dest = Rsp, src = imm localsSize} | localsSize > 0]
+        emit [pop Rbp]
         emit $
-          [add Op2{dest = Rsp, src = imm localsSize} | localsSize > 0]
-            <> [pop Rbp]
-            -- TODO: have caller put return address *after* the stack arguments, then use `ret
-            -- stackArgumentsSize`, which pops the return address into `rip` then releases
-            -- `stackArgumentsSize` bytes from the stack.
-            <> [add Op2{dest = Rsp, src = imm stackArgumentsSize} | stackArgumentsSize > 0]
-            <> [ret ()]
+          if stackArgumentsSize > 0
+            then [ret $ imm stackArgumentsSize]
+            else [ret ()]
 
   ifor_ s'.typeDicts generateTypeDict
 
@@ -1402,9 +1410,6 @@ instSelectionCall_X86_64 var function args = do
             then Just register <$ emit [push register]
             else pure Nothing
 
-      (label, emitLabel) <- declareLabel "after"
-      emit [push (imm label)]
-
       functionArguments <-
         setupFunctionArguments
           (generalPurposeRegisters @X86_64)
@@ -1437,28 +1442,28 @@ instSelectionCall_X86_64 var function args = do
             Literal lit ->
               [push (imm lit)]
 
-      emit [push Rbp]
-      emit [mov Op2{src = Rsp, dest = Rbp}]
-
       available <- gets (.available)
       emit $
         case functionLocation of
           ValueAt (Register register) ->
-            [jmp register]
+            [call register]
           ValueAt (Stack offset) ->
-            [jmp Mem{base = BaseRegister Rbp, offset}]
+            case Seq.viewl available of
+              Seq.EmptyL ->
+                error "TODO: calling value in memory when no registers available"
+              register Seq.:< _ ->
+                [mov Op2{src = Mem{base = BaseRegister Rbp, offset}, dest = register}, call register]
           AddressOf (Metis.InstSelection.Symbol symbol) ->
-            [jmp symbol]
+            [call symbol]
           AddressOf (Memory mem) ->
             case Seq.viewl available of
               Seq.EmptyL ->
-                error "TODO: jump to address of memory when no registers available"
+                error "TODO: calling address when no registers available"
               register Seq.:< _ ->
-                [lea Op2{src = mem, dest = register}, jmp register]
+                [lea Op2{src = mem, dest = register}, call register]
           Literal{} ->
             error "cannot jump to literal"
 
-      emitLabel
       freeKills var
 
       {- At this point, the callee should have cleaned up. It will have:

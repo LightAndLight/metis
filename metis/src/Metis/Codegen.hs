@@ -63,6 +63,8 @@ printInstruction_X86_64 inst =
       "pop " <> printRegister reg
     Call_s sym ->
       "call " <> printSymbol sym
+    Call_r reg ->
+      "call *" <> printRegister reg
     Je_s sym ->
       "je " <> printSymbol sym
     Jmp_s sym ->
@@ -73,6 +75,8 @@ printInstruction_X86_64 inst =
       "jmp *" <> printMemory mem
     Ret ->
       "ret"
+    Ret_i i ->
+      "ret " <> printImmediate i
     Inst2_ir inst2 op2 ->
       -- AT&T syntax
       printInst2 inst2 <> " " <> printImmediate op2.src <> ", " <> printRegister op2.dest
