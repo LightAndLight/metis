@@ -219,7 +219,7 @@ spec =
                 Anf.LetC
                   (Anf.MkVar 3)
                   (Type.Fn [Type.Ptr Type.Unknown, Type.Ptr $ Type.Var (Anf.MkVar 0), Type.Ptr $ Type.Var (Anf.MkVar 0)] (Type.Ptr $ Type.Var (Anf.MkVar 0)))
-                  (Anf.GetField (Anf.Var $ Anf.MkVar 0) "move")
+                  (Anf.GetTypeDictField (Anf.Var $ Anf.MkVar 0) Anf.TypeDictMove)
                   $ Anf.LetC
                     (Anf.MkVar 4)
                     (Type.Ptr $ Type.Var (Anf.MkVar 0))

@@ -429,13 +429,13 @@ spec =
                   -- rax <- a
                   -- rbx <- x
                   -- rcx <- out
-                  -- begin: call `copy`
-                  "push $after"
+                  "mov 8(%rax), %rdx" -- load the `move` function pointer
+                  -- begin: call `move` function pointer
+                , "push $after"
                 , "push %rbp"
                 , "mov %rsp, %rbp"
-                , "mov 8(%rax), %rdx" -- load the `copy` function pointer
                 , "jmp *%rdx"
-                , -- end: call `copy`
+                , -- end: call `move`
                   "after:"
                 , -- return
                   -- return value is already in `rax`
@@ -473,11 +473,11 @@ spec =
               typeDictUint64 =
                 [ "type_Uint64:"
                 , ".quad 8"
-                , ".quad Type_Uint64_copy"
+                , ".quad Type_Uint64_move"
                 ]
 
-              copyUint64 =
-                [ "Type_Uint64_copy:"
+              moveUint64 =
+                [ "Type_Uint64_move:"
                 , -- rax: self
                   -- rbx: from (pointer)
                   -- rcx: to (pointer)
@@ -494,13 +494,13 @@ spec =
                 , -- `a : Type` is in `rax`
                   -- `x : a` is in `rbx`
                   -- result destination is in `rcx`
-                  -- begin: call `copy`
-                  "push $after"
+                  "mov 8(%rax), %rdx" -- load the `move` function pointer
+                  -- begin: call `move`
+                , "push $after"
                 , "push %rbp"
                 , "mov %rsp, %rbp"
-                , "mov 8(%rax), %rdx" -- load the `copy` function pointer
                 , "jmp *%rdx"
-                , -- end: call `copy`
+                , -- end: call `move`
                   "after:"
                 , -- return
                   -- return value is already in `rax`
@@ -531,7 +531,7 @@ spec =
                 <> typeDictUint64
                 <> [".text"]
                 <> fnId
-                <> copyUint64
+                <> moveUint64
                 <> fnMain
         }
     ]

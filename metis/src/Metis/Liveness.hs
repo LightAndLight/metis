@@ -98,7 +98,7 @@ varsCompound compound =
     Alloca ty -> varsType ty
     Store a b -> varsSimple a <> varsSimple b
     Load a -> varsSimple a
-    GetField a _field -> varsSimple a
+    GetTypeDictField a _field -> varsSimple a
 
 varsSimple :: Simple -> HashSet Var
 varsSimple simple =

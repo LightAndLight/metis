@@ -11,6 +11,7 @@ module Metis.Anf (
   Simple (..),
   typeOf,
   Compound (..),
+  TypeDictField (..),
   Binop (..),
   ExprInfo (..),
   Function (..),
@@ -80,7 +81,12 @@ data Compound
   | Alloca (Type Var)
   | Store Simple Simple
   | Load Simple
-  | GetField Simple Text
+  | GetTypeDictField Simple TypeDictField
+  deriving (Show, Eq)
+
+data TypeDictField
+  = TypeDictSize
+  | TypeDictMove
   deriving (Show, Eq)
 
 data Binop = Add | Subtract
@@ -209,17 +215,54 @@ fromFunction nameTys Core.Function{name, tyArgs, args, retTy, body} =
     , body = program (Return simple)
     }
   where
+    fromType renameTyVar ty =
+      let renamedTy = fmap renameTyVar ty
+       in case renamedTy of
+            Type.Var{} ->
+              Type.Ptr renamedTy
+            _ ->
+              renamedTy
+
     (AnfBuilderState{labelArgs, varKinds, varTys, program}, (tyArgs', args', retTy', simple)) =
       runIdentity . runAnfBuilderT $ do
         tyVars <- traverse (\(_, kind) -> freshTyVar kind) tyArgs
         let renameTyVar index = tyVars !! fromIntegral @Word64 @Int index
-        args'' <- traverse (\(_, ty) -> let ty' = fmap renameTyVar ty in (,) <$> freshVar ty' <*> pure ty') args
+        args'' <-
+          traverse
+            ( \(_, ty) -> do
+                let ty' = fromType renameTyVar ty
+                param <- freshVar ty'
+                pure (param, ty')
+            )
+            args
+        let retTy'' = fromType renameTyVar retTy
+        mReturnParam <-
+          case retTy of
+            Type.Var{} ->
+              Just <$> freshVar retTy'
+            _ ->
+              pure Nothing
         body' <- fromCoreExpr nameTys renameTyVar (\index -> fst $ args'' !! fromIntegral @Word64 @Int index) body
+        result <-
+          case mReturnParam of
+            Just returnParam -> do
+              case retTy'' of
+                Type.Ptr (Type.Var tyVar) -> do
+                  move <- Var <$> letC (Type.Fn [Type.Ptr Type.Unknown, retTy'', retTy''] retTy'') (GetTypeDictField (Var tyVar) TypeDictMove)
+                  Var <$> letC retTy'' (Call move [Var tyVar, body', Var returnParam])
+                Type.Ptr _ ->
+                  error "TODO: non-type variable return parameters"
+                _ ->
+                  error $ "got non-pointer return parameter: " <> show retTy''
+            _ ->
+              pure body'
         pure
           ( zipWith (\tyVar (_, kind) -> (tyVar, kind)) tyVars tyArgs
-          , args''
-          , fmap renameTyVar retTy
-          , body'
+          , case mReturnParam of
+              Nothing -> args''
+              Just returnParam -> args'' <> [(returnParam, retTy'')]
+          , retTy''
+          , result
           )
 
 fromCoreExpr ::
