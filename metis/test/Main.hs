@@ -6,6 +6,7 @@ import qualified Test.CoreToAsm
 import Test.Hspec (hspec)
 import qualified Test.InstSelection
 import qualified Test.Liveness
+import qualified Test.SimplifyAsm
 
 main :: IO ()
 main =
@@ -15,3 +16,4 @@ main =
     Test.Compile.spec
     Test.CoreToAsm.spec
     Test.Liveness.spec
+    Test.SimplifyAsm.spec

@@ -85,6 +85,7 @@ test-suite metis-test
         Test.Compile
         Test.CoreToAsm
         Test.Liveness
+        Test.SimplifyAsm
     -- other-extensions:
     type:             exitcode-stdio-1.0
     hs-source-dirs:   test

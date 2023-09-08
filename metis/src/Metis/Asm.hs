@@ -23,23 +23,27 @@ import Data.Text (Text)
 import Data.Text.Lazy.Builder (Builder)
 import qualified Data.Text.Lazy.Builder as Builder
 import Data.Word (Word64)
-import Metis.Isa (Instruction, Symbol (..))
+import Metis.Isa (Instruction, Isa, Symbol (..))
 
 data Asm isa = Asm
   { data_ :: [DataEntry]
   , text :: [Block isa]
   }
+  deriving (Eq, Show)
 
 data DataEntry = DataEntry {label :: Text, content :: [Directive]}
+  deriving (Eq, Show)
 
 data Block isa = Block
   { label :: Text
   , attributes :: [BlockAttribute]
   , statements :: [Statement isa]
   }
+deriving instance (Isa isa) => Eq (Block isa)
+deriving instance (Isa isa) => Show (Block isa)
 
 data BlockAttribute = Global
-  deriving (Eq)
+  deriving (Eq, Show)
 
 data Statement isa
   = Instruction (Instruction isa)

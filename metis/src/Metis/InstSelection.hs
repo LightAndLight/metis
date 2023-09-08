@@ -1888,6 +1888,8 @@ instSelectionLoad_X86_64 ::
 instSelectionLoad_X86_64 var ptr = do
   ptr' <- instSelectionSimple_X86_64 ptr
 
+  freeKills var
+
   varTys <- asks (.varTys)
   let ty = varTys var
   case ty of

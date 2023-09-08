@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -39,9 +40,10 @@ import Data.Kind (Type)
 import Data.Sequence (Seq)
 import Data.Text (Text)
 import Data.Word (Word64)
+import GHC.Generics (Generic)
 import Metis.Literal (Literal (..))
 
-class (Eq (Register isa), Show (Register isa), Hashable (Register isa)) => Isa isa where
+class (Eq (Register isa), Show (Register isa), Hashable (Register isa), Eq (Instruction isa), Show (Instruction isa)) => Isa isa where
   data Register isa :: Type
   data Instruction isa :: Type
 
@@ -73,16 +75,20 @@ instance ToImmediate Symbol where
   imm = Label
 
 data Memory isa = Mem {base :: MemoryBase isa, offset :: Int64}
+  deriving (Generic)
 
 deriving instance (Eq (Register isa)) => Eq (Memory isa)
 deriving instance (Show (Register isa)) => Show (Memory isa)
+instance (Hashable (Register isa)) => Hashable (Memory isa)
 
 data MemoryBase isa
   = BaseRegister (Register isa)
   | BaseLabel Symbol
+  deriving (Generic)
 
 deriving instance (Eq (Register isa)) => Eq (MemoryBase isa)
 deriving instance (Show (Register isa)) => Show (MemoryBase isa)
+instance (Hashable (Register isa)) => Hashable (MemoryBase isa)
 
 newtype Symbol = Symbol {value :: Text}
   deriving (Eq, Show, Hashable)

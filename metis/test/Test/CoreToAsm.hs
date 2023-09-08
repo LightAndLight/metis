@@ -29,7 +29,7 @@ import Metis.Codegen (printInstruction_X86_64)
 import Metis.Core (Expr (..), Function (..))
 import Metis.InstSelection (instSelectionEntrypoint_X86_64, instSelectionFunction_X86_64)
 import Metis.Isa (generalPurposeRegisters)
-import Metis.Isa.X86_64 (Register (..), X86_64)
+import Metis.Isa.X86_64 (Register (..), X86_64, simplify_X86_64)
 import qualified Metis.Kind as Kind
 import qualified Metis.Literal as Literal
 import qualified Metis.Liveness as Liveness
@@ -58,7 +58,7 @@ data TestCase where
 testCase :: TestCase -> SpecWith ()
 testCase TestCase{title, enabled, definitions, expr, availableRegisters, expectedOutput} =
   (if enabled then it else xit) title . withSystemTempFile "metis-coretoasm-logs.txt" $ \tempFilePath tempFileHandle -> saveLogsOnFailure tempFilePath $ do
-    asm <- fmap (Text.Lazy.Builder.toLazyText . printAsm printInstruction_X86_64) . runAsmBuilderT . handleLogging tempFileHandle $ do
+    asm <- fmap (Text.Lazy.Builder.toLazyText . printAsm printInstruction_X86_64 . simplify_X86_64) . runAsmBuilderT . handleLogging tempFileHandle $ do
       let coreNameTysMap =
             collectL' @(HashMap _ _) $
               fmap (\Function{name, tyArgs, args, retTy} -> (name, Type.forall_ tyArgs $ Type.Fn (fmap snd args) retTy)) definitions
@@ -218,13 +218,18 @@ spec =
             , "add -16(%rbp), %rax"
             ]
 
-            This code was simpler before I started generating code in explicit "RISC" (load-store)
+            This code was cleaner before I started generating code in explicit "RISC" (load-store)
             style. When immediate->memory stores aren't allowed (meaning that an immediate has to be
             moved into a register before it can be stored), the code uses an extra 8 bytes of
             stack memory for a temporary storage.
 
-            Later on I can reduce the instruction count by merging a bunch of these instructions.
-            I'm not sure how to reclaim the stack space in this optimisation, though.
+            Constant propagation and dead code elimination gets rid of a bunch of loads and stores,
+            but we're left with a `mov $99, -24(%rbp)` because the dead code elimination assumes
+            that all storage is alive at the end of the block.
+
+            I could get ride of that store by annotating blocks with their outgoing live locations,
+            but I'm not sure how to reclaim the stack space (changing `sub $24, %rsp` back to `sub
+            \$16, %rsp`).
             -}
 
             [ ".text"
@@ -232,15 +237,10 @@ spec =
             , "main:"
             , "mov %rsp, %rbp"
             , "sub $24, %rsp"
+            , "mov $100, -8(%rbp)"
+            , "mov $99, -24(%rbp)"
+            , "mov $101, -16(%rbp)"
             , "mov $99, %rax"
-            , "mov %rax, -16(%rbp)"
-            , "mov $100, %rax"
-            , "mov %rax, -8(%rbp)"
-            , "mov -16(%rbp), %rax"
-            , "mov %rax, -24(%rbp)"
-            , "mov $101, %rax"
-            , "mov %rax, -16(%rbp)"
-            , "mov -24(%rbp), %rax"
             , "add -8(%rbp), %rax"
             , "add -16(%rbp), %rax"
             ]
@@ -376,8 +376,8 @@ spec =
             [ ".text"
             , "f:"
             , "push %rbp"
-            , "mov %rsp, %rbp"
-            , -- `x` is in `rax`
+            , -- removed by dead code elimination: , "mov %rsp, %rbp"
+              -- `x` is in `rax`
               -- `y` is in `rbx`
               "add %rbx, %rax"
             , "pop %rbp"
@@ -423,8 +423,8 @@ spec =
             [ ".text"
             , "f:"
             , "push %rbp"
-            , "mov %rsp, %rbp"
-            , -- `x` is in `rax`
+            , -- removed by dead code elimination: , "mov %rsp, %rbp"
+              -- `x` is in `rax`
               -- `y` is in `rbx`
               "add %rbx, %rax"
             , "pop %rbp"
@@ -518,8 +518,8 @@ spec =
               moveUint64 =
                 [ "Type_Uint64_move:"
                 , "push %rbp"
-                , "mov %rsp, %rbp"
-                , -- rax: self
+                , -- removed by dead code elimination: , "mov %rsp, %rbp"
+                  -- rax: self
                   -- rbx: from (pointer)
                   -- rcx: to (pointer)
                   "mov (%rbx), %rdx"
@@ -552,10 +552,18 @@ spec =
                 , "mov $99, -8(%rbp)"
                 , -- set up arguments
                   "mov $type_Uint64, %rax" -- address of Uint64 type dictionary
+                  {- The following instruction uses a temporary register left over from the explicit
+                  load-store style code. Dead code elimination assumes that all registers and memory
+                  locations may be used by a function call, so it doesn't know that `id` doesn't
+                  need `rdx`. I could improve this by annotating each block with the registers it
+                  depends on.
+                  -}
+                , "lea -16(%rbp), %rdx"
                 , "lea -8(%rbp), %rbx" -- argument passed via stack
                 , "lea -16(%rbp), %rcx" -- result passed via stack
                 , "call id"
-                , "add $1, (%rax)"
+                , "mov (%rax), %rax"
+                , "add $1, %rax"
                 ]
              in
               [".data"]
