@@ -19,11 +19,12 @@ module Metis.Asm (
   printAsm,
 ) where
 
+import Data.HashSet (HashSet)
 import Data.Text (Text)
 import Data.Text.Lazy.Builder (Builder)
 import qualified Data.Text.Lazy.Builder as Builder
 import Data.Word (Word64)
-import Metis.Isa (Instruction, Isa, Symbol (..))
+import Metis.Isa (Instruction, Isa, Register, Symbol (..))
 
 data Asm isa = Asm
   { data_ :: [DataEntry]
@@ -37,6 +38,14 @@ data DataEntry = DataEntry {label :: Text, content :: [Directive]}
 data Block isa = Block
   { label :: Text
   , attributes :: [BlockAttribute]
+  , registerHints :: Maybe (HashSet (Register isa))
+  -- ^ The registers that are used by this block.
+  --
+  -- 'Nothing' means that no register information is provided, so the block will be treated as
+  -- potentially needed every register.
+  --
+  -- If 'registerHints' is @Just set@, then every register used by the block must be included in the
+  -- @set@. Conversely, it's okay to have registers in the set that aren't used by the block.
   , statements :: [Statement isa]
   }
 deriving instance (Isa isa) => Eq (Block isa)

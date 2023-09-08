@@ -4,6 +4,8 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 
 module Metis.Isa.X86_64 (
@@ -22,8 +24,12 @@ module Metis.Isa.X86_64 (
 
 import Control.Monad.State.Class (MonadState, gets, modify, put)
 import Control.Monad.State.Strict (evalState)
+import Data.Buildable (collectL')
+import Data.Foldable (toList)
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
+import Data.HashSet (HashSet)
+import qualified Data.HashSet as HashSet
 import Data.Hashable (Hashable)
 import qualified Data.Maybe as Maybe
 import Data.Word (Word64)
@@ -52,7 +58,7 @@ import Metis.Isa (
   Xor (..),
   imm,
  )
-import Witherable (wither)
+import Witherable (mapMaybe, wither)
 
 data X86_64
 
@@ -208,16 +214,14 @@ instance Ret X86_64 Immediate where ret = Ret_i
 simplify_X86_64 :: Asm X86_64 -> Asm X86_64
 simplify_X86_64 asm =
   asm
-    { text =
-        fmap
-          ( \block ->
-              block
-                { statements =
-                    deadCodeElimination_X86_64 $ propagateConstants_X86_64 block.statements
-                }
-          )
-          asm.text
+    { text = fmap (deadCodeElimination_X86_64 registerHints . propagateConstants_X86_64) asm.text
     }
+  where
+    registerHints :: HashMap Symbol (HashSet (Register X86_64))
+    registerHints =
+      collectL'
+        . mapMaybe (\block -> (Symbol block.label,) <$> block.registerHints)
+        $ asm.text
 
 data Constant isa
   = Address (Memory isa)
@@ -229,10 +233,13 @@ data PropConstState isa = PropConstState
   , memoryContents :: HashMap (Memory isa) (Constant isa)
   }
 
-propagateConstants_X86_64 :: [Statement X86_64] -> [Statement X86_64]
-propagateConstants_X86_64 =
-  flip evalState PropConstState{registerContents = mempty, memoryContents = mempty}
-    . traverse propConstStatement
+propagateConstants_X86_64 :: Block X86_64 -> Block X86_64
+propagateConstants_X86_64 block =
+  block
+    { statements =
+        flip evalState PropConstState{registerContents = mempty, memoryContents = mempty} $
+          traverse propConstStatement block.statements
+    }
 
 propConstStatement :: (MonadState (PropConstState X86_64) m) => Statement X86_64 -> m (Statement X86_64)
 propConstStatement statement =
@@ -387,23 +394,39 @@ data DceState isa = DceState
   , memoryUsage :: HashMap (Memory isa) Word64
   }
 
-deadCodeElimination_X86_64 :: [Statement X86_64] -> [Statement X86_64]
-deadCodeElimination_X86_64 =
-  flip evalState DceState{registerUsage = mempty, memoryUsage = mempty}
-    . fmap reverse
-    . wither dceStatement
-    . reverse
+deadCodeElimination_X86_64 :: HashMap Symbol (HashSet (Register X86_64)) -> Block X86_64 -> Block X86_64
+deadCodeElimination_X86_64 registerHints block =
+  block
+    { statements =
+        flip
+          evalState
+          DceState
+            { registerUsage = mempty
+            , memoryUsage = mempty
+            }
+          . fmap reverse
+          . wither (dceStatement registerHints)
+          $ reverse block.statements
+    }
 
-dceStatement :: (MonadState (DceState X86_64) m) => Statement X86_64 -> m (Maybe (Statement X86_64))
-dceStatement statement =
+dceStatement ::
+  (MonadState (DceState X86_64) m) =>
+  HashMap Symbol (HashSet (Register X86_64)) ->
+  Statement X86_64 ->
+  m (Maybe (Statement X86_64))
+dceStatement registerHints statement =
   case statement of
     Directive{} ->
       pure $ Just statement
     Instruction instruction ->
-      fmap Instruction <$> dceInstruction instruction
+      fmap Instruction <$> dceInstruction registerHints instruction
 
-dceInstruction :: (MonadState (DceState X86_64) m) => Instruction X86_64 -> m (Maybe (Instruction X86_64))
-dceInstruction inst =
+dceInstruction ::
+  (MonadState (DceState X86_64) m) =>
+  HashMap Symbol (HashSet (Register X86_64)) ->
+  Instruction X86_64 ->
+  m (Maybe (Instruction X86_64))
+dceInstruction registerHints inst =
   case inst of
     Inst2_ir inst2 Op2{src = _, dest} -> do
       unused <- gets ((== Just 0) . HashMap.lookup dest . (.registerUsage))
@@ -526,8 +549,22 @@ dceInstruction inst =
       if unused
         then pure . Just $ sub Op2{src = imm (8 :: Word64), dest = Rsp}
         else pure $ Just inst
-    Call_s{} -> do
-      modify (\s -> s{registerUsage = mempty, memoryUsage = mempty})
+    Call_s symbol -> do
+      case HashMap.lookup symbol registerHints of
+        Just possiblyUsedByCall ->
+          modify
+            ( \s ->
+                s
+                  { registerUsage =
+                      collectL'
+                        . mapMaybe (\reg -> if reg `HashSet.member` possiblyUsedByCall then Nothing else Just (reg, 0))
+                        . toList
+                        $ generalPurposeRegisters @X86_64
+                  , memoryUsage = mempty
+                  }
+            )
+        Nothing ->
+          modify (\s -> s{registerUsage = mempty, memoryUsage = mempty})
       pure $ Just inst
     Call_r{} -> do
       modify (\s -> s{registerUsage = mempty, memoryUsage = mempty})

@@ -12,7 +12,7 @@ import qualified Data.Text as Text
 import Data.Word (Word64)
 import Metis.Asm (Asm (..), Block (..), DataEntry (..), string)
 import Metis.Asm.Class (MonadAsm (..))
-import Metis.Isa (Symbol (..))
+import Metis.Isa (Isa, Symbol (..))
 
 data AsmBuilderState isa = AsmBuilderState
   { nextString :: Word64
@@ -30,7 +30,7 @@ runAsmBuilderT ma = do
   s <- execStateT ma.value initialAsmBuilderState
   pure s.asm
 
-instance (Monad m) => MonadAsm isa (AsmBuilderT isa m) where
+instance (Isa isa, Monad m) => MonadAsm isa (AsmBuilderT isa m) where
   string content =
     AsmBuilderT $ do
       label <- do
@@ -45,7 +45,7 @@ instance (Monad m) => MonadAsm isa (AsmBuilderT isa m) where
       modify (\s -> s{asm = s.asm{data_ = s.asm.data_ <> [DataEntry{label, content}]}})
       pure $ Symbol label
 
-  block label attributes statements =
+  block label attributes registerHints statements =
     AsmBuilderT $ do
-      modify (\s -> s{asm = s.asm{text = s.asm.text <> [Block{label, attributes, statements}]}})
+      modify (\s -> s{asm = s.asm{text = s.asm.text <> [Block{label, attributes, registerHints, statements}]}})
       pure $ Symbol label

@@ -1,4 +1,6 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE RecursiveDo #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -136,6 +138,7 @@ data InstSelectionState isa = InstSelectionState
   , previousBlocks :: [Block isa]
   , currentBlockName :: Text
   , currentBlockAttributes :: [BlockAttribute]
+  , currentBlockRegisterHints :: Maybe (HashSet (Register isa))
   , currentBlockStatements :: [Statement isa]
   }
 
@@ -144,8 +147,9 @@ initialInstSelectionState ::
   HashMap Anf.Var Liveness ->
   Text ->
   [BlockAttribute] ->
+  Maybe (HashSet (Register isa)) ->
   InstSelectionState isa
-initialInstSelectionState available liveness blockName blockAttributes =
+initialInstSelectionState available liveness blockName blockAttributes registerHints =
   InstSelectionState
     { nextStackOffset = 0
     , available
@@ -157,6 +161,7 @@ initialInstSelectionState available liveness blockName blockAttributes =
     , previousBlocks = []
     , currentBlockName = blockName
     , currentBlockAttributes = blockAttributes
+    , currentBlockRegisterHints = registerHints
     , currentBlockStatements = []
     }
 
@@ -193,7 +198,7 @@ emit instructions =
   modify (\s -> s{currentBlockStatements = s.currentBlockStatements <> fmap Instruction instructions})
 
 declareLabel ::
-  (MonadState (InstSelectionState isa) m) =>
+  (Isa isa, MonadState (InstSelectionState isa) m) =>
   Text ->
   m (Symbol, m ())
 declareLabel value = do
@@ -207,6 +212,7 @@ declareLabel value = do
                     <> [ Block
                           { label = s.currentBlockName
                           , attributes = s.currentBlockAttributes
+                          , registerHints = mempty
                           , statements = s.currentBlockStatements
                           }
                        ]
@@ -218,7 +224,7 @@ declareLabel value = do
     )
 
 beginBlock ::
-  (MonadState (InstSelectionState isa) m) =>
+  (Isa isa, MonadState (InstSelectionState isa) m) =>
   Text ->
   m Symbol
 beginBlock label =
@@ -231,6 +237,7 @@ beginBlock label =
                   <> [ Block
                         { label = s.currentBlockName
                         , attributes = s.currentBlockAttributes
+                        , registerHints = mempty
                         , statements = s.currentBlockStatements
                         }
                      ]
@@ -315,11 +322,16 @@ instSelection_X86_64 ::
   [BlockAttribute] ->
   m (Value X86_64)
 instSelection_X86_64 nameTys available exprInfo expr liveness blockName blockAttributes = do
-  let initialState = initialInstSelectionState available liveness blockName blockAttributes
+  let initialState = initialInstSelectionState available liveness blockName blockAttributes Nothing
   (a, s) <- runInstSelectionT nameTys exprInfo initialState (instSelectionExpr_X86_64 mempty expr)
   ifor_ s.typeDicts generateTypeDict
-  traverse_ (\Block{label, attributes, statements} -> Asm.block label attributes statements) s.previousBlocks
-  _ <- Asm.block s.currentBlockName s.currentBlockAttributes s.currentBlockStatements
+  traverse_ (\Block{label, attributes, registerHints, statements} -> Asm.block label attributes registerHints statements) s.previousBlocks
+  _ <-
+    Asm.block
+      s.currentBlockName
+      s.currentBlockAttributes
+      s.currentBlockRegisterHints
+      s.currentBlockStatements
   pure a
 
 instSelectionLiteral_X86_64 ::
@@ -789,7 +801,7 @@ generateTypeDict name ty =
     Type.Uint64 -> do
       move <-
         -- Type_Uint64_move(self : *Type, from : *Uint64, to : *Uint64)
-        Asm.block "Type_Uint64_move" [] . fmap Instruction $
+        Asm.block "Type_Uint64_move" [] (Just [Rbp, Rsp, Rax, Rbx, Rcx]) . fmap Instruction $
           [ push Rbp
           , mov Op2{src = Rsp, dest = Rbp}
           , load Op2{src = Mem{base = BaseRegister Rbx, offset = 0}, dest = Rdx}
@@ -805,7 +817,7 @@ generateTypeDict name ty =
         ]
     Type.Bool -> do
       move <-
-        Asm.block "Type_Bool_move" [] . fmap Instruction $
+        Asm.block "Type_Bool_move" [] (Just [Rbp, Rsp, Rax, Rbx, Rcx]) . fmap Instruction $
           [ push Rbp
           , mov Op2{src = Rsp, dest = Rbp}
           , movzbq Op2{src = Mem{base = BaseRegister Rbx, offset = 0}, dest = Rdx}
@@ -821,7 +833,7 @@ generateTypeDict name ty =
         ]
     Type.Fn{} -> do
       move <-
-        Asm.block "Type_Fn_move" [] . fmap Instruction $
+        Asm.block "Type_Fn_move" [] (Just [Rbp, Rsp, Rax, Rbx, Rcx]) . fmap Instruction $
           [ push Rbp
           , mov Op2{src = Rsp, dest = Rbp}
           , load Op2{src = Mem{base = BaseRegister Rbx, offset = 0}, dest = Rdx}
@@ -837,7 +849,7 @@ generateTypeDict name ty =
         ]
     Type.Forall{} -> do
       move <-
-        Asm.block "Type_Forall_move" [] . fmap Instruction $
+        Asm.block "Type_Forall_move" [] (Just [Rbp, Rsp, Rax, Rbx, Rcx]) . fmap Instruction $
           [ push Rbp
           , mov Op2{src = Rsp, dest = Rbp}
           , load Op2{src = Mem{base = BaseRegister Rbx, offset = 0}, dest = Rdx}
@@ -849,15 +861,16 @@ generateTypeDict name ty =
       Asm.block
         name.value
         []
+        (Just [])
         [ Directive $ Asm.quad (8 :: Word64)
         , Directive $ Asm.quad move
         ]
     Type.Unit -> do
-      move <-
-        Asm.block "Type_Unit_move" [] $ fmap Instruction [ret ()]
+      move <- Asm.block "Type_Unit_move" [] (Just []) $ fmap Instruction [ret ()]
       Asm.block
         name.value
         []
+        (Just [])
         [ Directive $ Asm.quad (0 :: Word64)
         , Directive $ Asm.quad move
         ]
@@ -874,7 +887,7 @@ instSelectionEntrypoint_X86_64 ::
   Anf.ExprInfo ->
   m (Value X86_64)
 instSelectionEntrypoint_X86_64 nameTys initialAvailable liveness name expr exprInfo = do
-  let initial = initialInstSelectionState initialAvailable liveness name [Global]
+  let initial = initialInstSelectionState initialAvailable liveness name [Global] Nothing
   rec let localsSize = fromIntegral @Int64 @Word64 (-s'.nextStackOffset)
       (value, s') <- runInstSelectionT nameTys exprInfo initial $ do
         emit [mov Op2{src = Rsp, dest = Rbp}]
@@ -884,13 +897,14 @@ instSelectionEntrypoint_X86_64 nameTys initialAvailable liveness name expr exprI
   ifor_ s'.typeDicts generateTypeDict
 
   traverse_
-    (\Block{label, attributes, statements} -> Asm.block label attributes statements)
+    (\Block{label, attributes, registerHints, statements} -> Asm.block label attributes registerHints statements)
     s'.previousBlocks
 
   _ <-
     Asm.block
       s'.currentBlockName
       s'.currentBlockAttributes
+      s'.currentBlockRegisterHints
       s'.currentBlockStatements
 
   pure value
@@ -903,7 +917,13 @@ instSelectionFunction_X86_64 ::
   Anf.Function ->
   m ()
 instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
-  let initial = initialInstSelectionState initialAvailable liveness function.name []
+  let initial =
+        initialInstSelectionState
+          initialAvailable
+          liveness
+          function.name
+          []
+          (Just $ [Rbp, Rsp] <> makeRegisterHints function.args)
   rec let localsSize = fromIntegral @Int64 @Word64 (-s'.nextStackOffset)
       ((), s') <- runInstSelectionT nameTys function.bodyInfo initial $ do
         (stackArgumentsSize, _mOutputLocation) <- setupArguments function.args function.retTy
@@ -936,17 +956,32 @@ instSelectionFunction_X86_64 nameTys initialAvailable liveness function = do
   ifor_ s'.typeDicts generateTypeDict
 
   traverse_
-    (\Block{label, attributes, statements} -> Asm.block label attributes statements)
+    (\Block{label, attributes, registerHints, statements} -> Asm.block label attributes registerHints statements)
     s'.previousBlocks
 
   _ <-
     Asm.block
       s'.currentBlockName
       s'.currentBlockAttributes
+      s'.currentBlockRegisterHints
       s'.currentBlockStatements
 
   pure ()
   where
+    makeRegisterHints :: [(a, Type Anf.Var)] -> HashSet (Register X86_64)
+    makeRegisterHints = go mempty (generalPurposeRegisters @X86_64)
+      where
+        go !acc registers args =
+          case Seq.viewl registers of
+            Seq.EmptyL ->
+              acc
+            register Seq.:< registers' ->
+              case args of
+                [] ->
+                  acc
+                (_, _arg) : args' ->
+                  go (HashSet.insert register acc) registers' args'
+
     -- TODO: this code is basically the same as `setupFunctionArguments`. Make it the same code?
     setupArguments ::
       (MonadState (InstSelectionState isa) m) =>

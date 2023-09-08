@@ -192,6 +192,7 @@ compile buildDir definitions expr outPath = do
       Asm.block
         "print_and_exit"
         []
+        Nothing
         ( fmap
             Instruction
             [ lea Op2{src = formatString, dest = Rdi}

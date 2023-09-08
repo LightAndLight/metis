@@ -227,7 +227,7 @@ spec =
             but we're left with a `mov $99, -24(%rbp)` because the dead code elimination assumes
             that all storage is alive at the end of the block.
 
-            I could get ride of that store by annotating blocks with their outgoing live locations,
+            I could get rid of that store by annotating blocks with their outgoing live locations (TODO?),
             but I'm not sure how to reclaim the stack space (changing `sub $24, %rsp` back to `sub
             \$16, %rsp`).
             -}
@@ -552,13 +552,6 @@ spec =
                 , "mov $99, -8(%rbp)"
                 , -- set up arguments
                   "mov $type_Uint64, %rax" -- address of Uint64 type dictionary
-                  {- The following instruction uses a temporary register left over from the explicit
-                  load-store style code. Dead code elimination assumes that all registers and memory
-                  locations may be used by a function call, so it doesn't know that `id` doesn't
-                  need `rdx`. I could improve this by annotating each block with the registers it
-                  depends on.
-                  -}
-                , "lea -16(%rbp), %rdx"
                 , "lea -8(%rbp), %rbx" -- argument passed via stack
                 , "lea -16(%rbp), %rcx" -- result passed via stack
                 , "call id"

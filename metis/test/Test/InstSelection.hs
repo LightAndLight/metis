@@ -51,7 +51,7 @@ spec =
   describe "Test.InstSelection" $ do
     describe "moveRegisterFunctionArguments" $ do
       it "a @ %rax, b @ %rbx |- f(b, a) : {%rbx, %rax} -> {%rax, %rbx}" $ do
-        let result = flip evalState (initialInstSelectionState (generalPurposeRegisters @X86_64) mempty "main" [Global]) $ do
+        let result = flip evalState (initialInstSelectionState (generalPurposeRegisters @X86_64) mempty "main" [Global] Nothing) $ do
               modify (\s -> s{available = Seq.filter (`notElem` ([Rax, Rbx] :: [Register X86_64])) s.available})
               moveRegisterFunctionArguments
                 mempty
@@ -73,7 +73,7 @@ spec =
                        mov Op2{src = Rcx {- Rax remapped -}, dest = Rbx}
                      ]
       it "a @ %rax, b @ %rbx |- f(b, a, b) : {%rbx, %rax, %rbx} -> {%rax, %rbx, %rcx}" $ do
-        let result = flip evalState (initialInstSelectionState (generalPurposeRegisters @X86_64) mempty "main" [Global]) $ do
+        let result = flip evalState (initialInstSelectionState (generalPurposeRegisters @X86_64) mempty "main" [Global] Nothing) $ do
               modify (\s -> s{available = Seq.filter (`notElem` ([Rax, Rbx] :: [Register X86_64])) s.available})
               moveRegisterFunctionArguments
                 mempty
