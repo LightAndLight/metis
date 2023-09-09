@@ -297,11 +297,11 @@ propConstInstruction inst =
       srcContents `assignedToMemory` dest'
       case srcContents of
         Address{} ->
-          pure inst
+          pure $ Inst2_rm Mov Op2{src, dest = dest'}
         Immediate i ->
           pure $ Inst2_im Mov Op2{src = i, dest = dest'}
         Unknown ->
-          pure inst
+          pure $ Inst2_rm Mov Op2{src, dest = dest'}
     Lea_mr Op2{src, dest} -> do
       src' <- propConstMemory src
       Address src' `assignedToRegister` dest
@@ -430,21 +430,19 @@ dceInstruction registerHints inst =
   case inst of
     Inst2_ir inst2 Op2{src = _, dest} -> do
       unused <- gets ((== Just 0) . HashMap.lookup dest . (.registerUsage))
+      registerOverwritten dest
       case inst2 of
         Mov ->
-          registerOverwritten dest
+          pure ()
         Movb ->
-          registerOverwritten dest
+          pure ()
         Movzbq ->
-          registerOverwritten dest
-        Add -> do
-          registerOverwritten dest
+          pure ()
+        Add ->
           registerUsed dest
-        Sub -> do
-          registerOverwritten dest
+        Sub ->
           registerUsed dest
-        Xor -> do
-          registerOverwritten dest
+        Xor ->
           registerUsed dest
       pure $ if unused then Nothing else Just inst
     Inst2_im inst2 Op2{src = _, dest} -> do
@@ -532,8 +530,8 @@ dceInstruction registerHints inst =
       pure $ if unused then Nothing else Just inst
     Lea_mr Op2{src, dest} -> do
       unused <- gets ((== Just 0) . HashMap.lookup dest . (.registerUsage))
-      addressUsed src
       registerOverwritten dest
+      addressUsed src
       pure $ if unused then Nothing else Just inst
     Push_r reg -> do
       registerUsed reg
