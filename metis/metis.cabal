@@ -25,7 +25,6 @@ common warnings
 library
     import:           warnings
     exposed-modules:  
-        Metis.InstSelection
         Metis.Anf
         Metis.Asm
         Metis.Asm.Builder
@@ -33,12 +32,14 @@ library
         Metis.Codegen
         Metis.Compile
         Metis.Core
+        Metis.InstSelection
         Metis.Isa
         Metis.Isa.X86_64
         Metis.Kind
         Metis.Literal
         Metis.Liveness
         Metis.Log
+        Metis.RegisterAllocation
         Metis.Type
     -- other-modules:
     -- other-extensions:
@@ -85,6 +86,7 @@ test-suite metis-test
         Test.Compile
         Test.CoreToAsm
         Test.Liveness
+        Test.RegisterAllocation
         Test.SimplifyAsm
     -- other-extensions:
     type:             exitcode-stdio-1.0
