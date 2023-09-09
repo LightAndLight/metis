@@ -6,10 +6,14 @@ module Test.Compile (spec) where
 import Bound.Scope.Simple (toScope)
 import Bound.Var (Var (..))
 import Control.Exception (SomeException, catch, fromException, throwIO)
+import Data.CallStack (HasCallStack)
+import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Void (Void)
 import ErrorReporting (hunitFailureToResult)
 import Metis.Compile (ProgramError (..), ProgramResult (..), Stdin (..), Stdout (..), assemble, compile, runProgram)
 import qualified Metis.Core as Core
+import qualified Metis.Kind as Kind
 import qualified Metis.Literal as Literal
 import qualified Metis.Type as Type
 import qualified System.Directory as Directory
@@ -63,59 +67,95 @@ spec =
                     , "{standard input}:1: Error: number of operands mismatch for `mov'"
                     ]
               }
+
     describe "compile and run" $ do
-      it "1 + 2" . withTempDir "metis-test-compile" $ \tempDir -> do
-        let definitions = []
-        let expr = Core.Add Type.Uint64 (Core.Literal $ Literal.Uint64 1) (Core.Literal $ Literal.Uint64 2)
-        let outPath = tempDir </> "program"
+      let
+        shouldEvaluateTo :: (HasCallStack) => ([Core.Function], Core.Expr Void Void) -> Either ProgramError (ProgramResult Text) -> IO ()
+        shouldEvaluateTo (definitions, expr) expected =
+          withTempDir "metis-test-compile" $ \tempDir -> do
+            let outPath = tempDir </> "program"
 
-        compile tempDir definitions expr outPath
+            compile tempDir definitions expr outPath
 
-        outPathExists <- Directory.doesFileExist outPath
-        outPathExists `shouldBe` True
+            outPathExists <- Directory.doesFileExist outPath
+            outPathExists `shouldBe` True
 
-        result <- runProgram outPath [] NoStdin CaptureStdout
+            result <- runProgram outPath [] NoStdin CaptureStdout
 
-        result `shouldBe` Right ProgramResult{stdout = "3\n"}
-      it "22 - 4" . withTempDir "metis-test-compile" $ \tempDir -> do
-        let definitions = []
-        let expr = Core.Subtract Type.Uint64 (Core.Literal $ Literal.Uint64 22) (Core.Literal $ Literal.Uint64 4)
-        let outPath = tempDir </> "program"
+            result `shouldBe` expected
 
-        compile tempDir definitions expr outPath
+      it "1 + 2" $
+        ( []
+        , Core.Add Type.Uint64 (Core.Literal $ Literal.Uint64 1) (Core.Literal $ Literal.Uint64 2)
+        )
+          `shouldEvaluateTo` Right ProgramResult{stdout = "3\n"}
+      it "22 - 4" $
+        ( []
+        , Core.Subtract Type.Uint64 (Core.Literal $ Literal.Uint64 22) (Core.Literal $ Literal.Uint64 4)
+        )
+          `shouldEvaluateTo` Right ProgramResult{stdout = "18\n"}
+      it "fn f(x : Uint64, y : Uint64) : Uint64 = x + y; fn main() = let x = 1; let y = 2; x + f(x, y)" $
+        (
+          [ Core.Function
+              { name = "f"
+              , tyArgs = []
+              , args = [("x", Type.Uint64), ("y", Type.Uint64)]
+              , retTy = Type.Uint64
+              , body =
+                  Core.Add
+                    Type.Uint64
+                    (Core.Var 0)
+                    (Core.Var 1)
+              }
+          ]
+        , Core.Let Type.Uint64 (Just "x") Type.Uint64 (Core.Literal $ Literal.Uint64 1) . toScope $
+            Core.Let Type.Uint64 (Just "y") Type.Uint64 (Core.Literal $ Literal.Uint64 2) . toScope $
+              Core.Add Type.Uint64 (Core.Var . F $ B ()) (Core.Call Type.Uint64 (Core.Name "f") [] [Core.Var . F $ B (), Core.Var $ B ()])
+        )
+          `shouldEvaluateTo` Right ProgramResult{stdout = "4\n"}
 
-        outPathExists <- Directory.doesFileExist outPath
-        outPathExists `shouldBe` True
+      it "fn id @(a : Type) (x : a) : a = x; fn main() = let x = id @Uint64 99; x + 1" $
+        (
+          [ Core.Function
+              { name = "id"
+              , tyArgs = [("a", Kind.Type)]
+              , args = [("x", Type.Var 0)]
+              , retTy = Type.Var 0
+              , body = Core.Var 0
+              }
+          ]
+        , Core.Let Type.Uint64 (Just "x") Type.Uint64 (Core.Call Type.Uint64 (Core.Name "id") [Type.Uint64] [Core.Literal $ Literal.Uint64 99]) . toScope $
+            Core.Add Type.Uint64 (Core.Var (B ())) (Core.Literal $ Literal.Uint64 1)
+        )
+          `shouldEvaluateTo` Right ProgramResult{stdout = "100\n"}
 
-        result <- runProgram outPath [] NoStdin CaptureStdout
-
-        result `shouldBe` Right ProgramResult{stdout = "18\n"}
-      it "fn f(x : Uint64, y : Uint64) : Uint64 = x + y; fn main() = let x = 1; let y = 2; x + f(x, y)" . withTempDir "metis-test-compile" $ \tempDir -> do
-        let
-          definitions =
-            [ Core.Function
-                { name = "f"
-                , tyArgs = []
-                , args = [("x", Type.Uint64), ("y", Type.Uint64)]
-                , retTy = Type.Uint64
-                , body =
-                    Core.Add
-                      Type.Uint64
-                      (Core.Var 0)
-                      (Core.Var 1)
-                }
-            ]
-          expr =
-            Core.Let Type.Uint64 (Just "x") Type.Uint64 (Core.Literal $ Literal.Uint64 1) . toScope $
-              Core.Let Type.Uint64 (Just "y") Type.Uint64 (Core.Literal $ Literal.Uint64 2) . toScope $
-                Core.Add Type.Uint64 (Core.Var . F $ B ()) (Core.Call Type.Uint64 (Core.Name "f") [] [Core.Var . F $ B (), Core.Var $ B ()])
-        let outPath = tempDir </> "program"
-
-        compile tempDir definitions expr outPath
-
-        outPathExists <- Directory.doesFileExist outPath
-        outPathExists `shouldBe` True
-
-        result <- runProgram outPath [] NoStdin CaptureStdout
-
-        result `shouldBe` Right ProgramResult{stdout = "4\n"}
+      it "fn id @(a : Type) (x : a) : a = x; fn main() = id @Uint99 (id @Uint64 99 + 1) + 1" $
+        (
+          [ Core.Function
+              { name = "id"
+              , tyArgs = [("a", Kind.Type)]
+              , args = [("x", Type.Var 0)]
+              , retTy = Type.Var 0
+              , body = Core.Var 0
+              }
+          ]
+        , Core.Add
+            Type.Uint64
+            ( Core.Call
+                Type.Uint64
+                (Core.Name "id")
+                [Type.Uint64]
+                [ Core.Add
+                    Type.Uint64
+                    ( Core.Call
+                        Type.Uint64
+                        (Core.Name "id")
+                        [Type.Uint64]
+                        [Core.Literal $ Literal.Uint64 99]
+                    )
+                    (Core.Literal $ Literal.Uint64 1)
+                ]
+            )
+            (Core.Literal $ Literal.Uint64 1)
+        )
+          `shouldEvaluateTo` Right ProgramResult{stdout = "101\n"}

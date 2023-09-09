@@ -166,6 +166,7 @@ compile buildDir definitions expr outPath = do
   let availableRegisters = generalPurposeRegisters @X86_64
   asm <- fmap (Asm.printAsm printInstruction_X86_64) . Asm.runAsmBuilderT . noLogging $ do
     let anfDefinitions = fmap (Anf.fromFunction coreNameTys) definitions
+    let (anfInfo, anf) = Anf.fromCore coreNameTys absurd absurd expr
 
     let
       anfNameTysMap :: HashMap Text (Type Anf.Var)
@@ -183,7 +184,6 @@ compile buildDir definitions expr outPath = do
       instSelectionFunction_X86_64 anfNameTys availableRegisters liveness anfFunction
 
     resultValue <- do
-      let (anfInfo, anf) = Anf.fromCore anfNameTys absurd absurd expr
       let liveness = Liveness.liveness anf
       instSelectionEntrypoint_X86_64 anfNameTys availableRegisters liveness "main" anf anfInfo
 
