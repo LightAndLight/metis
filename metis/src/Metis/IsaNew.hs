@@ -13,8 +13,8 @@ module Metis.IsaNew (
   Isa (..),
   Immediate (..),
   sizeOfImmediate,
-  Memory (..),
-  MemoryBase (..),
+  Address (..),
+  AddressBase (..),
   Symbol (..),
 ) where
 
@@ -58,21 +58,21 @@ sizeOfImmediate i =
     Word64{} -> 8
     Label{} -> pointerSize @isa
 
-data Memory isa = Mem {base :: MemoryBase isa, offset :: Int64}
+data Address isa = Address {base :: AddressBase isa, offset :: Int64}
   deriving (Generic)
 
-deriving instance (Eq (Register isa)) => Eq (Memory isa)
-deriving instance (Show (Register isa)) => Show (Memory isa)
-instance (Hashable (Register isa)) => Hashable (Memory isa)
+deriving instance (Isa isa) => Eq (Address isa)
+deriving instance (Isa isa) => Show (Address isa)
+instance (Isa isa) => Hashable (Address isa)
 
-data MemoryBase isa
+data AddressBase isa
   = BaseRegister (Register isa)
   | BaseLabel Symbol
   deriving (Generic)
 
-deriving instance (Eq (Register isa)) => Eq (MemoryBase isa)
-deriving instance (Show (Register isa)) => Show (MemoryBase isa)
-instance (Hashable (Register isa)) => Hashable (MemoryBase isa)
+deriving instance (Isa isa) => Eq (AddressBase isa)
+deriving instance (Isa isa) => Show (AddressBase isa)
+instance (Isa isa) => Hashable (AddressBase isa)
 
 newtype Symbol = Symbol {value :: Text}
   deriving (Eq, Show, Hashable)

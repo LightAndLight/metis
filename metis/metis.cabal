@@ -33,6 +33,7 @@ library
         Metis.Compile
         Metis.Core
         Metis.InstSelection
+        Metis.InstSelectionNew
         Metis.Isa
         Metis.Isa.X86_64
         Metis.IsaNew
@@ -42,6 +43,7 @@ library
         Metis.Liveness
         Metis.Log
         Metis.RegisterAllocation
+        Metis.SSA
         Metis.SSA.Var
         Metis.Type
     -- other-modules:

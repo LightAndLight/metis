@@ -3,6 +3,7 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
@@ -30,6 +31,8 @@ data AnyVar :: Type where
 
 instance Eq AnyVar where
   AnyVar a == AnyVar b = a.value == b.value
+
+deriving instance Show AnyVar
 
 instance Hashable AnyVar where
   hashWithSalt salt (AnyVar a) = hashWithSalt salt a.value

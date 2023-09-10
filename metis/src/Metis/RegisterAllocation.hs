@@ -42,13 +42,13 @@ import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import Data.Type.Equality ((:~:) (..))
 import Data.Word (Word64)
-import Metis.IsaNew (Isa (..), Memory (..), MemoryBase (..))
+import Metis.IsaNew (Address (..), AddressBase (..), Isa (..))
 import qualified Metis.SSA.Var as SSA
 import Witherable (wither)
 
 data Physical :: Type -> Type -> Type where
   Register :: Register isa -> Physical isa (Register isa)
-  Memory :: Memory isa -> Word64 -> Physical isa (Memory isa)
+  Memory :: Address isa -> Word64 -> Physical isa (Address isa)
 
 deriving instance (Isa isa) => Show (Physical isa a)
 deriving instance (Isa isa) => Eq (Physical isa a)
@@ -69,12 +69,12 @@ data AllocRegistersState isa = AllocRegistersState
   , varSizes :: HashMap SSA.AnyVar Word64
   , freeRegisters :: Seq (Register isa)
   , occupiedRegisters :: HashMap (Register isa) (SSA.Var (Register isa))
-  , freeMemory :: HashMap Word64 (Seq (Memory isa))
+  , freeMemory :: HashMap Word64 (Seq (Address isa))
   , stackFrameTop :: Int64
   }
 
 data Location :: Type -> Type -> Type where
-  Spilled :: Physical isa (Memory isa) -> Location isa (Register isa)
+  Spilled :: Address isa -> Word64 -> Location isa (Register isa)
   NotSpilled :: Physical isa a -> Location isa a
 
 deriving instance (Isa isa) => Show (Location isa a)
@@ -92,7 +92,7 @@ getRegister ::
 getRegister dict@AllocRegisters{load} var conflicts = do
   location <- gets (\AllocRegistersState{locations} -> Maybe.fromMaybe (error $ "virtual " <> show var <> " missing from map") $ locations var)
   case location of
-    Spilled mem -> do
+    Spilled mem _ -> do
       reg <- allocateRegister dict conflicts
       assignRegister var reg
       tell . DList.singleton $ load reg mem
@@ -102,8 +102,8 @@ getRegister dict@AllocRegisters{load} var conflicts = do
 
 getMemory ::
   (MonadReader AllocRegistersEnv m, MonadState (AllocRegistersState isa) m) =>
-  SSA.Var (Memory isa) ->
-  m (Physical isa (Memory isa))
+  SSA.Var (Address isa) ->
+  m (Physical isa (Address isa))
 getMemory var = do
   location <- gets (\AllocRegistersState{locations} -> Maybe.fromMaybe (error $ "virtual " <> show var <> " missing from map") $ locations var)
   case location of
@@ -132,16 +132,17 @@ setPhysical var physical = do
 setSpilled ::
   (MonadReader AllocRegistersEnv m, MonadState (AllocRegistersState isa) m) =>
   SSA.Var (Register isa) ->
-  Physical isa (Memory isa) ->
+  Address isa ->
+  Word64 ->
   m ()
-setSpilled var mem@(Memory _mem size) =
+setSpilled var mem size =
   modify
     ( \s@AllocRegistersState{locations} ->
         s
           { locations = \var' ->
               case SSA.eqVar var var' of
                 Just Refl ->
-                  Just $ Spilled mem
+                  Just $ Spilled mem size
                 Nothing ->
                   locations var'
           , varSizes = HashMap.insert (SSA.AnyVar var) size s.varSizes
@@ -187,10 +188,11 @@ allocateRegister AllocRegisters{store} conflicts = do
         [] ->
           error "not enough registers"
         (reg, var :: SSA.Var (Register isa)) : _ -> do
-          mem <- allocateLocal (registerSize reg)
+          let size = registerSize reg
+          mem <- allocateLocal size
 
           let occupiedRegister = Register reg
-          setSpilled var mem
+          setSpilled var mem size
 
           tell . DList.singleton $ store mem occupiedRegister
           pure occupiedRegister
@@ -216,26 +218,26 @@ allocateLocal ::
   (Isa isa) =>
   (MonadReader AllocRegistersEnv m, MonadState (AllocRegistersState isa) m) =>
   Word64 ->
-  m (Physical isa (Memory isa))
+  m (Address isa)
 allocateLocal size = do
   freeMemory <- gets (.freeMemory)
   case HashMap.lookup size freeMemory of
     Just (Seq.viewl -> memory Seq.:< memorys) -> do
       modify (\s -> s{freeMemory = HashMap.insert size memorys freeMemory})
-      pure $ Memory memory size
+      pure memory
     _ -> do
       stackFrameTop <- gets (.stackFrameTop)
       let nextStackFrameTop = stackFrameTop - fromIntegral @Word64 @Int64 size
       modify (\s -> s{stackFrameTop = nextStackFrameTop})
-      pure $ Memory Mem{base = BaseRegister $ framePointerRegister @isa, offset = nextStackFrameTop} size
+      pure Address{base = BaseRegister $ framePointerRegister @isa, offset = nextStackFrameTop}
 
 assignLocal ::
   ( Isa isa
   , MonadReader AllocRegistersEnv m
   , MonadState (AllocRegistersState isa) m
   ) =>
-  SSA.Var (Memory isa) ->
-  Physical isa (Memory isa) ->
+  SSA.Var (Address isa) ->
+  Physical isa (Address isa) ->
   m ()
 assignLocal =
   setPhysical
@@ -273,7 +275,7 @@ freeVar var = do
       error $ "var " <> show var <> " missing from locations map"
     Just location ->
       case location of
-        Spilled (Memory mem size) ->
+        Spilled mem size ->
           modify
             ( \s ->
                 s
@@ -314,8 +316,8 @@ data AllocRegisters isa = AllocRegisters
       Instruction isa var ->
       m (Instruction isa var')
   , instructionVarInfo :: forall var. (forall a. var a -> Word64) -> Instruction isa var -> Instruction isa (VarInfo isa var)
-  , load :: forall var. var (Register isa) -> var (Memory isa) -> Instruction isa var
-  , store :: forall var. var (Memory isa) -> var (Register isa) -> Instruction isa var
+  , load :: forall var. var (Register isa) -> Address isa -> Instruction isa var
+  , store :: forall var. Address isa -> var (Register isa) -> Instruction isa var
   }
 
 data VarInfo isa var a
@@ -328,7 +330,7 @@ data Usage var a
 
 data VarType :: Type -> Type -> Type where
   VarReg :: VarType isa (Register isa)
-  VarMem :: Word64 -> VarType isa (Memory isa)
+  VarMem :: Word64 -> VarType isa (Address isa)
 
 allocRegistersVar ::
   forall isa m a.
@@ -358,8 +360,9 @@ allocRegistersVar dict (VarInfo info varType var) =
           pure dest
         VarMem size -> do
           dest <- allocateLocal size
-          assignLocal var dest
-          pure dest
+          let mem = Memory dest size
+          assignLocal var mem
+          pure mem
     DefReuse src -> do
       src' <-
         case varType of
