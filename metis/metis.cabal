@@ -49,6 +49,7 @@ library
         containers,
         deriving-compat,
         directory,
+        dlist,
         filepath,
         foldable-buildable,
         hashable,

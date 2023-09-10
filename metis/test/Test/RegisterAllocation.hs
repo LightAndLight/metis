@@ -5,7 +5,19 @@ import Control.Monad.State.Strict (evalState)
 import qualified Data.HashMap.Strict as HashMap
 import qualified Data.HashSet as HashSet
 import qualified Data.Sequence as Seq
-import Metis.RegisterAllocation (AllocRegistersEnv (..), AllocRegistersState (..), AnyVirtual (..), Imm (..), Inst (..), Mem (..), Physical (..), Reg (..), Virtual (..), allocRegistersInsts)
+import Metis.RegisterAllocation (
+  AllocRegistersEnv (..),
+  AllocRegistersState (..),
+  AnyVirtual (..),
+  Imm (..),
+  Inst (..),
+  Mem (..),
+  Physical (..),
+  Reg (..),
+  Virtual (..),
+  allocRegisters,
+  allocRegistersInst,
+ )
 import Test.Hspec (Spec, describe, it, shouldBe)
 
 spec :: Spec
@@ -27,6 +39,7 @@ spec =
             evalState
             AllocRegistersState
               { locations = const Nothing
+              , varSizes = mempty
               , freeRegisters = Seq.fromList [Rax, Rbx, Rcx, Rdx]
               , occupiedRegisters = mempty
               , freeMemory = mempty
@@ -46,7 +59,7 @@ spec =
                       , (AnyVirtual (Virtual 6), HashSet.fromList [AnyVirtual (Virtual 2), AnyVirtual (Virtual 5)])
                       ]
                 }
-            $ allocRegistersInsts input
+            $ allocRegisters allocRegistersInst input
       result
         `shouldBe` [ Mov_ri (Register Rax) (Word64 1)
                    , Mov_ri (Register Rbx) (Word64 2)
@@ -73,6 +86,7 @@ spec =
             evalState
             AllocRegistersState
               { locations = const Nothing
+              , varSizes = mempty
               , freeRegisters = Seq.fromList [Rax, Rbx]
               , occupiedRegisters = mempty
               , freeMemory = mempty
@@ -92,7 +106,7 @@ spec =
                       , (AnyVirtual (Virtual 6), HashSet.fromList [AnyVirtual (Virtual 2), AnyVirtual (Virtual 5)])
                       ]
                 }
-            $ allocRegistersInsts input
+            $ allocRegisters allocRegistersInst input
       result
         `shouldBe` [ Mov_ri (Register Rax) (Word64 1)
                    , Mov_ri (Register Rbx) (Word64 2)
