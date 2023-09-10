@@ -32,8 +32,8 @@ module Metis.RegisterAllocation (
 
 import Control.Monad.Reader.Class (MonadReader, asks)
 import Control.Monad.State.Class (MonadState, gets, modify)
-import Control.Monad.Trans.Class (lift)
-import Control.Monad.Trans.Writer.CPS (WriterT, runWriterT, tell)
+import Control.Monad.Trans.Writer.CPS (runWriterT)
+import Control.Monad.Writer.Class (MonadWriter, tell)
 import Data.DList (DList)
 import qualified Data.DList as DList
 import Data.Foldable (for_)
@@ -122,17 +122,17 @@ instance Hashable AnyVirtual where
   hashWithSalt salt (AnyVirtual a) = hashWithSalt salt a.value
 
 getRegister ::
-  (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m) =>
+  (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m, MonadWriter (DList (inst Physical)) m) =>
   AllocRegisters inst ->
   Virtual Reg ->
   [Virtual Reg] ->
-  WriterT (DList (inst Physical)) m (Physical Reg)
+  m (Physical Reg)
 getRegister dict@AllocRegisters{load} var conflicts = do
-  location <- lift $ gets (\AllocRegistersState{locations} -> Maybe.fromMaybe (error $ "virtual " <> show var <> " missing from map") $ locations var)
+  location <- gets (\AllocRegistersState{locations} -> Maybe.fromMaybe (error $ "virtual " <> show var <> " missing from map") $ locations var)
   case location of
     Spilled mem -> do
       reg <- allocateRegister dict conflicts
-      lift $ assignRegister var reg
+      assignRegister var reg
       tell . DList.singleton $ load reg mem
       pure reg
     NotSpilled p ->
@@ -191,19 +191,19 @@ setOccupied (Register reg) var =
   modify (\s -> s{occupiedRegisters = HashMap.insert reg var s.occupiedRegisters})
 
 allocateRegister ::
-  (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m) =>
+  (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m, MonadWriter (DList (inst Physical)) m) =>
   AllocRegisters inst ->
   [Virtual Reg] ->
-  WriterT (DList (inst Physical)) m (Physical Reg)
+  m (Physical Reg)
 allocateRegister AllocRegisters{store} conflicts = do
-  freeRegisters <- lift $ gets (.freeRegisters)
+  freeRegisters <- gets (.freeRegisters)
   case Seq.viewl freeRegisters of
     Seq.EmptyL -> do
-      occupiedRegisters <- lift $ gets (.occupiedRegisters)
+      occupiedRegisters <- gets (.occupiedRegisters)
       conflictingRegisters :: [Reg] <-
         wither
           ( \v -> do
-              mLocation <- lift $ gets (\AllocRegistersState{locations} -> locations v)
+              mLocation <- gets (\AllocRegistersState{locations} -> locations v)
               case mLocation of
                 Nothing ->
                   pure Nothing
@@ -217,16 +217,16 @@ allocateRegister AllocRegisters{store} conflicts = do
         [] ->
           error "not enough registers"
         (reg, var :: Virtual Reg) : _ -> do
-          mem <- lift $ allocateLocal (regSize reg)
+          mem <- allocateLocal (regSize reg)
 
           let occupiedRegister = Register reg
-          lift $ setSpilled var mem
+          setSpilled var mem
 
           tell . DList.singleton $ store mem occupiedRegister
           pure occupiedRegister
     reg Seq.:< freeRegisters' -> do
       let physical = Register reg
-      lift $ modify (\s -> s{freeRegisters = freeRegisters'})
+      modify (\s -> s{freeRegisters = freeRegisters'})
       pure physical
 
 assignRegister ::
@@ -347,29 +347,29 @@ data VarType :: Type -> Type where
 
 allocRegistersVar ::
   forall m a inst.
-  (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m) =>
+  (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m, MonadWriter (DList (inst Physical)) m) =>
   AllocRegisters inst ->
   VarInfo Virtual a ->
-  WriterT (DList (inst Physical)) m (Physical a)
+  m (Physical a)
 allocRegistersVar dict (VarInfo info varType var) =
   case info of
     Use conflicts ->
       case varType of
         VarMem _size ->
-          lift $ getMemory var
+          getMemory var
         VarReg ->
           getRegister dict var conflicts
     DefNew -> do
-      lift $ freeVirtuals =<< getKilledBy var
+      freeVirtuals =<< getKilledBy var
 
       case varType of
         VarReg -> do
           dest <- allocateRegister dict []
-          lift $ assignRegister var dest
+          assignRegister var dest
           pure dest
         VarMem size -> do
-          dest <- lift $ allocateLocal size
-          lift $ assignLocal var dest
+          dest <- allocateLocal size
+          assignLocal var dest
           pure dest
     DefReuse src -> do
       src' <-
@@ -377,23 +377,23 @@ allocRegistersVar dict (VarInfo info varType var) =
           VarReg ->
             getRegister dict src []
           VarMem _size ->
-            lift $ getMemory src
+            getMemory src
 
-      killedByDest <- lift $ getKilledBy var
-      lift $ freeVirtuals (HashSet.delete (AnyVirtual src) killedByDest)
+      killedByDest <- getKilledBy var
+      freeVirtuals (HashSet.delete (AnyVirtual src) killedByDest)
 
       let
         {-# INLINE assign #-}
         assign =
           case varType of
             VarReg ->
-              lift $ assignRegister var src'
+              assignRegister var src'
             VarMem _size ->
-              lift $ assignLocal var src'
+              assignLocal var src'
 
       -- I need to give this expression a type signature, and `fourmolu` crashes if I parenthesise
       -- the `case` expression and give it a type. Factoring out the expression fixes it.
-      assign :: WriterT (DList (inst Physical)) m ()
+      assign :: m ()
 
       pure src'
 
@@ -413,7 +413,15 @@ allocRegisters1 dict@AllocRegisters{traverseVars, instructionVarInfo} inst = do
       (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m) =>
       m VarSizes
     varSizesFunction =
-      gets (\s -> VarSizes (\var -> Maybe.fromMaybe (error $ "var " <> show var <> " not in sizes map") $ HashMap.lookup (AnyVirtual var) s.varSizes))
+      gets
+        ( \s ->
+            VarSizes
+              ( \var ->
+                  Maybe.fromMaybe
+                    (error $ "var " <> show var <> " not in sizes map")
+                    (HashMap.lookup (AnyVirtual var) s.varSizes)
+              )
+        )
 
 allocRegisters ::
   (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m) =>
