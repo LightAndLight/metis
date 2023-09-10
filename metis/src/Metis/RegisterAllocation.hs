@@ -1,23 +1,21 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImpredicativeTypes #-}
-{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE QuantifiedConstraints #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
 
 module Metis.RegisterAllocation (
-  Imm (..),
-  Reg (..),
-  Mem (..),
   Virtual (..),
   AnyVirtual (..),
   Physical (..),
@@ -26,8 +24,10 @@ module Metis.RegisterAllocation (
   Location (..),
   AllocRegisters (..),
   allocRegisters,
-  Inst (..),
-  allocRegistersInst,
+  MockIsa,
+  Instruction (..),
+  Register (..),
+  allocRegistersMockIsa,
 ) where
 
 import Control.Monad.Reader.Class (MonadReader, asks)
@@ -50,25 +50,9 @@ import qualified Data.Sequence as Seq
 import Data.Type.Equality ((:~:) (..))
 import Data.Word (Word64)
 import GHC.Generics (Generic)
+import Metis.IsaNew (Immediate, Isa (..), Memory (..), MemoryBase (..), sizeOfImmediate)
 import Unsafe.Coerce (unsafeCoerce)
 import Witherable (wither)
-
-data Reg = Rax | Rbx | Rcx | Rdx | Rbp
-  deriving (Eq, Show, Generic)
-
-regSize :: Reg -> Word64
-regSize _ = 8
-
-instance Hashable Reg
-
-data Imm = Word64 Word64
-  deriving (Eq, Show)
-
-immSize :: Imm -> Word64
-immSize Word64{} = 8
-
-data Mem = Mem {base :: Reg, offset :: Int64, size :: Word64}
-  deriving (Eq, Show)
 
 newtype Virtual a = Virtual {value :: Int}
   deriving (Eq, Hashable, Show)
@@ -79,38 +63,38 @@ virtualEq (Virtual a) (Virtual b) =
     then Just (unsafeCoerce @(a :~: a) @(a :~: b) Refl)
     else Nothing
 
-data Physical :: Type -> Type where
-  Register :: Reg -> Physical Reg
-  Memory :: Mem -> Physical Mem
+data Physical :: Type -> Type -> Type where
+  Register :: Register isa -> Physical isa (Register isa)
+  Memory :: Memory isa -> Word64 -> Physical isa (Memory isa)
 
-deriving instance Show (Physical a)
-deriving instance Eq (Physical a)
+deriving instance (Isa isa) => Show (Physical isa a)
+deriving instance (Isa isa) => Eq (Physical isa a)
 
-physicalSize :: Physical a -> Word64
-physicalSize (Register reg) = regSize reg
-physicalSize (Memory mem) = mem.size
+physicalSize :: (Isa isa) => Physical isa a -> Word64
+physicalSize (Register reg) = registerSize reg
+physicalSize (Memory _mem size) = size
 
 data AllocRegistersEnv = AllocRegistersEnv
   { kills :: HashMap AnyVirtual (HashSet AnyVirtual)
   }
 
-data AllocRegistersState = AllocRegistersState
+data AllocRegistersState isa = AllocRegistersState
   { locations ::
       forall a.
       Virtual a ->
-      Maybe (Location a)
+      Maybe (Location isa a)
   , varSizes :: HashMap AnyVirtual Word64
-  , freeRegisters :: Seq Reg
-  , occupiedRegisters :: HashMap Reg (Virtual Reg)
-  , freeMemory :: HashMap Word64 (Seq Mem)
+  , freeRegisters :: Seq (Register isa)
+  , occupiedRegisters :: HashMap (Register isa) (Virtual (Register isa))
+  , freeMemory :: HashMap Word64 (Seq (Memory isa))
   , stackFrameTop :: Int64
   }
 
-data Location :: Type -> Type where
-  Spilled :: Physical Mem -> Location Reg
-  NotSpilled :: Physical a -> Location a
+data Location :: Type -> Type -> Type where
+  Spilled :: Physical isa (Memory isa) -> Location isa (Register isa)
+  NotSpilled :: Physical isa a -> Location isa a
 
-deriving instance Show (Location a)
+deriving instance (Isa isa) => Show (Location isa a)
 
 data AnyVirtual :: Type where
   AnyVirtual :: Virtual a -> AnyVirtual
@@ -122,11 +106,15 @@ instance Hashable AnyVirtual where
   hashWithSalt salt (AnyVirtual a) = hashWithSalt salt a.value
 
 getRegister ::
-  (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m, MonadWriter (DList (inst Physical)) m) =>
-  AllocRegisters inst ->
-  Virtual Reg ->
-  [Virtual Reg] ->
-  m (Physical Reg)
+  ( Isa isa
+  , MonadReader AllocRegistersEnv m
+  , MonadState (AllocRegistersState isa) m
+  , MonadWriter (DList (Instruction isa (Physical isa))) m
+  ) =>
+  AllocRegisters isa ->
+  Virtual (Register isa) ->
+  [Virtual (Register isa)] ->
+  m (Physical isa (Register isa))
 getRegister dict@AllocRegisters{load} var conflicts = do
   location <- gets (\AllocRegistersState{locations} -> Maybe.fromMaybe (error $ "virtual " <> show var <> " missing from map") $ locations var)
   case location of
@@ -139,9 +127,9 @@ getRegister dict@AllocRegisters{load} var conflicts = do
       pure p
 
 getMemory ::
-  (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m) =>
-  Virtual Mem ->
-  m (Physical Mem)
+  (MonadReader AllocRegistersEnv m, MonadState (AllocRegistersState isa) m) =>
+  Virtual (Memory isa) ->
+  m (Physical isa (Memory isa))
 getMemory var = do
   location <- gets (\AllocRegistersState{locations} -> Maybe.fromMaybe (error $ "virtual " <> show var <> " missing from map") $ locations var)
   case location of
@@ -149,9 +137,9 @@ getMemory var = do
       pure p
 
 setPhysical ::
-  (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m) =>
+  (Isa isa, MonadReader AllocRegistersEnv m, MonadState (AllocRegistersState isa) m) =>
   Virtual a ->
-  Physical a ->
+  Physical isa a ->
   m ()
 setPhysical var physical = do
   modify
@@ -168,11 +156,11 @@ setPhysical var physical = do
     )
 
 setSpilled ::
-  (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m) =>
-  Virtual Reg ->
-  Physical Mem ->
+  (MonadReader AllocRegistersEnv m, MonadState (AllocRegistersState isa) m) =>
+  Virtual (Register isa) ->
+  Physical isa (Memory isa) ->
   m ()
-setSpilled var mem@(Memory Mem{size}) =
+setSpilled var mem@(Memory _mem size) =
   modify
     ( \s@AllocRegistersState{locations} ->
         s
@@ -186,21 +174,29 @@ setSpilled var mem@(Memory Mem{size}) =
           }
     )
 
-setOccupied :: (MonadState AllocRegistersState m) => Physical Reg -> Virtual Reg -> m ()
+setOccupied ::
+  (Isa isa, MonadState (AllocRegistersState isa) m) =>
+  Physical isa (Register isa) ->
+  Virtual (Register isa) ->
+  m ()
 setOccupied (Register reg) var =
   modify (\s -> s{occupiedRegisters = HashMap.insert reg var s.occupiedRegisters})
 
 allocateRegister ::
-  (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m, MonadWriter (DList (inst Physical)) m) =>
-  AllocRegisters inst ->
-  [Virtual Reg] ->
-  m (Physical Reg)
+  ( Isa isa
+  , MonadReader AllocRegistersEnv m
+  , MonadState (AllocRegistersState isa) m
+  , MonadWriter (DList (Instruction isa (Physical isa))) m
+  ) =>
+  AllocRegisters isa ->
+  [Virtual (Register isa)] ->
+  m (Physical isa (Register isa))
 allocateRegister AllocRegisters{store} conflicts = do
   freeRegisters <- gets (.freeRegisters)
   case Seq.viewl freeRegisters of
     Seq.EmptyL -> do
       occupiedRegisters <- gets (.occupiedRegisters)
-      conflictingRegisters :: [Reg] <-
+      conflictingRegisters :: [Register isa] <-
         wither
           ( \v -> do
               mLocation <- gets (\AllocRegistersState{locations} -> locations v)
@@ -216,8 +212,8 @@ allocateRegister AllocRegisters{store} conflicts = do
       case filter (\(r, _v) -> r `notElem` conflictingRegisters) $ HashMap.toList occupiedRegisters of
         [] ->
           error "not enough registers"
-        (reg, var :: Virtual Reg) : _ -> do
-          mem <- allocateLocal (regSize reg)
+        (reg, var :: Virtual (Register isa)) : _ -> do
+          mem <- allocateLocal (registerSize reg)
 
           let occupiedRegister = Register reg
           setSpilled var mem
@@ -230,55 +226,70 @@ allocateRegister AllocRegisters{store} conflicts = do
       pure physical
 
 assignRegister ::
-  (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m) =>
-  Virtual Reg ->
-  Physical Reg ->
+  ( Isa isa
+  , MonadReader AllocRegistersEnv m
+  , MonadState (AllocRegistersState isa) m
+  ) =>
+  Virtual (Register isa) ->
+  Physical isa (Register isa) ->
   m ()
 assignRegister var reg = do
   setOccupied reg var
   setPhysical var reg
 
 allocateLocal ::
-  (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m) =>
+  forall m isa.
+  (Isa isa) =>
+  (MonadReader AllocRegistersEnv m, MonadState (AllocRegistersState isa) m) =>
   Word64 ->
-  m (Physical Mem)
+  m (Physical isa (Memory isa))
 allocateLocal size = do
   freeMemory <- gets (.freeMemory)
   case HashMap.lookup size freeMemory of
     Just (Seq.viewl -> memory Seq.:< memorys) -> do
       modify (\s -> s{freeMemory = HashMap.insert size memorys freeMemory})
-      pure $ Memory memory
+      pure $ Memory memory size
     _ -> do
       stackFrameTop <- gets (.stackFrameTop)
       let nextStackFrameTop = stackFrameTop - fromIntegral @Word64 @Int64 size
       modify (\s -> s{stackFrameTop = nextStackFrameTop})
-      pure $ Memory Mem{base = Rbp, offset = nextStackFrameTop, size}
+      pure $ Memory Mem{base = BaseRegister $ framePointerRegister @isa, offset = nextStackFrameTop} size
 
 assignLocal ::
-  (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m) =>
-  Virtual Mem ->
-  Physical Mem ->
+  ( Isa isa
+  , MonadReader AllocRegistersEnv m
+  , MonadState (AllocRegistersState isa) m
+  ) =>
+  Virtual (Memory isa) ->
+  Physical isa (Memory isa) ->
   m ()
 assignLocal =
   setPhysical
 
 getKilledBy ::
-  (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m) =>
+  (MonadReader AllocRegistersEnv m, MonadState (AllocRegistersState isa) m) =>
   Virtual a ->
   m (HashSet AnyVirtual)
 getKilledBy var =
   asks (Maybe.fromMaybe mempty . HashMap.lookup (AnyVirtual var) . (.kills))
 
 freeVirtuals ::
-  (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m, Foldable f) =>
+  ( Isa isa
+  , MonadReader AllocRegistersEnv m
+  , MonadState (AllocRegistersState isa) m
+  , Foldable f
+  ) =>
   f AnyVirtual ->
   m ()
 freeVirtuals vars =
   for_ vars (\(AnyVirtual var) -> freeVirtual var)
 
 freeVirtual ::
-  forall m a.
-  (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m) =>
+  forall isa m a.
+  ( Isa isa
+  , MonadReader AllocRegistersEnv m
+  , MonadState (AllocRegistersState isa) m
+  ) =>
   Virtual a ->
   m ()
 freeVirtual var = do
@@ -288,14 +299,14 @@ freeVirtual var = do
       error $ "var " <> show var <> " missing from locations map"
     Just location ->
       case location of
-        Spilled (Memory mem) ->
+        Spilled (Memory mem size) ->
           modify
             ( \s ->
                 s
                   { freeMemory =
                       HashMap.insertWith
                         (\new old -> old <> new)
-                        mem.size
+                        size
                         (Seq.singleton mem)
                         s.freeMemory
                   }
@@ -308,49 +319,53 @@ freeVirtual var = do
                   , occupiedRegisters = HashMap.delete reg s.occupiedRegisters
                   }
             )
-        NotSpilled (Memory mem) ->
+        NotSpilled (Memory mem size) ->
           modify
             ( \s ->
                 s
                   { freeMemory =
                       HashMap.insertWith
                         (\new old -> old <> new)
-                        mem.size
+                        size
                         (Seq.singleton mem)
                         s.freeMemory
                   }
             )
 
-data AllocRegisters inst = AllocRegisters
+data AllocRegisters isa = AllocRegisters
   { traverseVars ::
       forall m var var'.
       (Applicative m) =>
       (forall a. var a -> m (var' a)) ->
-      inst var ->
-      m (inst var')
-  , instructionVarInfo :: forall var. (forall a. var a -> Word64) -> inst var -> inst (VarInfo var)
-  , load :: forall var. var Reg -> var Mem -> inst var
-  , store :: forall var. var Mem -> var Reg -> inst var
+      Instruction isa var ->
+      m (Instruction isa var')
+  , instructionVarInfo :: forall var. (forall a. var a -> Word64) -> Instruction isa var -> Instruction isa (VarInfo isa var)
+  , load :: forall var. var (Register isa) -> var (Memory isa) -> Instruction isa var
+  , store :: forall var. var (Memory isa) -> var (Register isa) -> Instruction isa var
   }
 
-data VarInfo var a
-  = VarInfo (Usage var a) (VarType a) (var a)
+data VarInfo isa var a
+  = VarInfo (Usage var a) (VarType isa a) (var a)
 
 data Usage var a
   = Use [var a]
   | DefReuse (var a)
   | DefNew
 
-data VarType :: Type -> Type where
-  VarReg :: VarType Reg
-  VarMem :: Word64 -> VarType Mem
+data VarType :: Type -> Type -> Type where
+  VarReg :: VarType isa (Register isa)
+  VarMem :: Word64 -> VarType isa (Memory isa)
 
 allocRegistersVar ::
-  forall m a inst.
-  (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m, MonadWriter (DList (inst Physical)) m) =>
-  AllocRegisters inst ->
-  VarInfo Virtual a ->
-  m (Physical a)
+  forall isa m a.
+  ( Isa isa
+  , MonadReader AllocRegistersEnv m
+  , MonadState (AllocRegistersState isa) m
+  , MonadWriter (DList (Instruction isa (Physical isa))) m
+  ) =>
+  AllocRegisters isa ->
+  VarInfo isa Virtual a ->
+  m (Physical isa a)
 allocRegistersVar dict (VarInfo info varType var) =
   case info of
     Use conflicts ->
@@ -400,17 +415,20 @@ allocRegistersVar dict (VarInfo info varType var) =
 newtype VarSizes = VarSizes (forall a. Virtual a -> Word64)
 
 allocRegisters1 ::
-  (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m) =>
-  AllocRegisters inst ->
-  inst Virtual ->
-  m [inst Physical]
+  ( Isa isa
+  , MonadReader AllocRegistersEnv m
+  , MonadState (AllocRegistersState isa) m
+  ) =>
+  AllocRegisters isa ->
+  Instruction isa Virtual ->
+  m [Instruction isa (Physical isa)]
 allocRegisters1 dict@AllocRegisters{traverseVars, instructionVarInfo} inst = do
   VarSizes f <- varSizesFunction
   (lastInst, insts) <- runWriterT $ traverseVars (allocRegistersVar dict) $ instructionVarInfo f inst
   pure . DList.toList $ insts <> DList.singleton lastInst
   where
     varSizesFunction ::
-      (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m) =>
+      (MonadReader AllocRegistersEnv m, MonadState (AllocRegistersState isa) m) =>
       m VarSizes
     varSizesFunction =
       gets
@@ -424,26 +442,50 @@ allocRegisters1 dict@AllocRegisters{traverseVars, instructionVarInfo} inst = do
         )
 
 allocRegisters ::
-  (MonadReader AllocRegistersEnv m, MonadState AllocRegistersState m) =>
-  AllocRegisters inst ->
-  [inst Virtual] ->
-  m [inst Physical]
+  ( Isa isa
+  , MonadReader AllocRegistersEnv m
+  , MonadState (AllocRegistersState isa) m
+  ) =>
+  AllocRegisters isa ->
+  [Instruction isa Virtual] ->
+  m [Instruction isa (Physical isa)]
 allocRegisters dict =
   fmap concat . traverse (allocRegisters1 dict)
 
-data Inst var
-  = Mov_ri (var Reg) Imm
-  | Mov_rm (var Reg) (var Mem)
-  | Mov_mi (var Mem) Imm
-  | Mov_mr (var Mem) (var Reg)
-  | Add_ri (var Reg) (var Reg) Imm
-  | Add_rr (var Reg) (var Reg) (var Reg)
+data MockIsa
 
-deriving instance (forall a. (Show a) => Show (var a)) => Show (Inst var)
-deriving instance (forall a. (Eq a) => Eq (var a)) => Eq (Inst var)
+instance Isa MockIsa where
+  pointerSize = 8
 
-allocRegistersInst :: AllocRegisters Inst
-allocRegistersInst =
+  data Register MockIsa = Rax | Rbx | Rcx | Rdx | Rbp
+    deriving (Eq, Show, Generic)
+
+  registerSize _ = 8
+
+  registerName Rax = "rax"
+  registerName Rbx = "rbx"
+  registerName Rcx = "rcx"
+  registerName Rdx = "rdx"
+  registerName Rbp = "rbp"
+
+  generalPurposeRegisters = Seq.fromList [Rax, Rbx, Rcx, Rdx]
+
+  framePointerRegister = Rbp
+
+  data Instruction MockIsa var
+    = Mov_ri (var (Register MockIsa)) Immediate
+    | Mov_rm (var (Register MockIsa)) (var (Memory MockIsa))
+    | Mov_mi (var (Memory MockIsa)) Immediate
+    | Mov_mr (var (Memory MockIsa)) (var (Register MockIsa))
+    | Add_ri (var (Register MockIsa)) (var (Register MockIsa)) Immediate
+    | Add_rr (var (Register MockIsa)) (var (Register MockIsa)) (var (Register MockIsa))
+
+instance Hashable (Register MockIsa)
+deriving instance (forall a. (Show a) => Show (var a)) => Show (Instruction MockIsa var)
+deriving instance (forall a. (Eq a) => Eq (var a)) => Eq (Instruction MockIsa var)
+
+allocRegistersMockIsa :: AllocRegisters MockIsa
+allocRegistersMockIsa =
   AllocRegisters
     { traverseVars
     , instructionVarInfo
@@ -454,8 +496,8 @@ allocRegistersInst =
     traverseVars ::
       (Applicative m) =>
       (forall a. var a -> m (var' a)) ->
-      Inst var ->
-      m (Inst var')
+      Instruction MockIsa var ->
+      m (Instruction MockIsa var')
     traverseVars f inst =
       case inst of
         Mov_ri dest imm ->
@@ -473,8 +515,8 @@ allocRegistersInst =
 
     instructionVarInfo ::
       (forall a. var a -> Word64) ->
-      Inst var ->
-      Inst (VarInfo var)
+      Instruction MockIsa var ->
+      Instruction MockIsa (VarInfo MockIsa var)
     instructionVarInfo varSize inst =
       case inst of
         Mov_ri dest imm ->
@@ -487,7 +529,7 @@ allocRegistersInst =
             (VarInfo (Use []) (VarMem $ varSize src) src)
         Mov_mi dest imm ->
           Mov_mi
-            (VarInfo DefNew (VarMem $ immSize imm) dest)
+            (VarInfo DefNew (VarMem $ sizeOfImmediate @MockIsa imm) dest)
             imm
         Mov_mr dest src ->
           Mov_mr

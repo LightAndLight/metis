@@ -1,3 +1,5 @@
+{-# LANGUAGE TypeApplications #-}
+
 module Test.RegisterAllocation (spec) where
 
 import Control.Monad.Reader (runReaderT)
@@ -5,18 +7,18 @@ import Control.Monad.State.Strict (evalState)
 import qualified Data.HashMap.Strict as HashMap
 import qualified Data.HashSet as HashSet
 import qualified Data.Sequence as Seq
+import Metis.IsaNew (Immediate (..), Memory (..), MemoryBase (..), generalPurposeRegisters)
 import Metis.RegisterAllocation (
   AllocRegistersEnv (..),
   AllocRegistersState (..),
   AnyVirtual (..),
-  Imm (..),
-  Inst (..),
-  Mem (..),
+  Instruction (..),
+  MockIsa,
   Physical (..),
-  Reg (..),
+  Register (..),
   Virtual (..),
   allocRegisters,
-  allocRegistersInst,
+  allocRegistersMockIsa,
  )
 import Test.Hspec (Spec, describe, it, shouldBe)
 
@@ -40,7 +42,7 @@ spec =
             AllocRegistersState
               { locations = const Nothing
               , varSizes = mempty
-              , freeRegisters = Seq.fromList [Rax, Rbx, Rcx, Rdx]
+              , freeRegisters = generalPurposeRegisters @MockIsa
               , occupiedRegisters = mempty
               , freeMemory = mempty
               , stackFrameTop = 0
@@ -59,7 +61,7 @@ spec =
                       , (AnyVirtual (Virtual 6), HashSet.fromList [AnyVirtual (Virtual 2), AnyVirtual (Virtual 5)])
                       ]
                 }
-            $ allocRegisters allocRegistersInst input
+            $ allocRegisters allocRegistersMockIsa input
       result
         `shouldBe` [ Mov_ri (Register Rax) (Word64 1)
                    , Mov_ri (Register Rbx) (Word64 2)
@@ -106,15 +108,15 @@ spec =
                       , (AnyVirtual (Virtual 6), HashSet.fromList [AnyVirtual (Virtual 2), AnyVirtual (Virtual 5)])
                       ]
                 }
-            $ allocRegisters allocRegistersInst input
+            $ allocRegisters allocRegistersMockIsa input
       result
         `shouldBe` [ Mov_ri (Register Rax) (Word64 1)
                    , Mov_ri (Register Rbx) (Word64 2)
                    , Add_rr (Register Rax) (Register Rax) (Register Rbx)
                    , Mov_ri (Register Rbx) (Word64 3)
-                   , Mov_mr (Memory Mem{base = Rbp, offset = -8, size = 8}) (Register Rax)
+                   , Mov_mr (Memory Mem{base = BaseRegister Rbp, offset = -8} 8) (Register Rax)
                    , Mov_ri (Register Rax) (Word64 4)
                    , Add_rr (Register Rbx) (Register Rbx) (Register Rax)
-                   , Mov_rm (Register Rax) (Memory Mem{base = Rbp, offset = -8, size = 8})
+                   , Mov_rm (Register Rax) (Memory Mem{base = BaseRegister Rbp, offset = -8} 8)
                    , Add_rr (Register Rax) (Register Rax) (Register Rbx)
                    ]

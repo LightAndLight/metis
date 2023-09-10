@@ -34,6 +34,7 @@ library
         Metis.Core
         Metis.InstSelection
         Metis.Isa
+        Metis.IsaNew
         Metis.Isa.X86_64
         Metis.Kind
         Metis.Literal
