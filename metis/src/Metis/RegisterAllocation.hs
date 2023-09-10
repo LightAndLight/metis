@@ -1,4 +1,3 @@
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
@@ -19,11 +18,10 @@ module Metis.RegisterAllocation (
   AllocRegistersState (..),
   Location (..),
   AllocRegisters (..),
+  VarInfo (..),
+  Usage (..),
+  VarType (..),
   allocRegisters,
-  MockIsa,
-  Instruction (..),
-  Register (..),
-  allocRegistersMockIsa,
 ) where
 
 import Control.Monad.Reader.Class (MonadReader, asks)
@@ -37,7 +35,6 @@ import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 import Data.HashSet (HashSet)
 import qualified Data.HashSet as HashSet
-import Data.Hashable (Hashable (..))
 import Data.Int (Int64)
 import Data.Kind (Type)
 import qualified Data.Maybe as Maybe
@@ -45,8 +42,7 @@ import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import Data.Type.Equality ((:~:) (..))
 import Data.Word (Word64)
-import GHC.Generics (Generic)
-import Metis.IsaNew (Immediate, Isa (..), Memory (..), MemoryBase (..), sizeOfImmediate)
+import Metis.IsaNew (Isa (..), Memory (..), MemoryBase (..))
 import qualified Metis.SSA.Var as SSA
 import Witherable (wither)
 
@@ -429,97 +425,3 @@ allocRegisters ::
   m [Instruction isa (Physical isa)]
 allocRegisters dict =
   fmap concat . traverse (allocRegisters1 dict)
-
-data MockIsa
-
-instance Isa MockIsa where
-  pointerSize = 8
-
-  data Register MockIsa = Rax | Rbx | Rcx | Rdx | Rbp
-    deriving (Eq, Show, Generic)
-
-  registerSize _ = 8
-
-  registerName Rax = "rax"
-  registerName Rbx = "rbx"
-  registerName Rcx = "rcx"
-  registerName Rdx = "rdx"
-  registerName Rbp = "rbp"
-
-  generalPurposeRegisters = Seq.fromList [Rax, Rbx, Rcx, Rdx]
-
-  framePointerRegister = Rbp
-
-  data Instruction MockIsa var
-    = Mov_ri (var (Register MockIsa)) Immediate
-    | Mov_rm (var (Register MockIsa)) (var (Memory MockIsa))
-    | Mov_mi (var (Memory MockIsa)) Immediate
-    | Mov_mr (var (Memory MockIsa)) (var (Register MockIsa))
-    | Add_ri (var (Register MockIsa)) (var (Register MockIsa)) Immediate
-    | Add_rr (var (Register MockIsa)) (var (Register MockIsa)) (var (Register MockIsa))
-
-instance Hashable (Register MockIsa)
-deriving instance (forall a. (Show a) => Show (var a)) => Show (Instruction MockIsa var)
-deriving instance (forall a. (Eq a) => Eq (var a)) => Eq (Instruction MockIsa var)
-
-allocRegistersMockIsa :: AllocRegisters MockIsa
-allocRegistersMockIsa =
-  AllocRegisters
-    { traverseVars
-    , instructionVarInfo
-    , load = Mov_rm
-    , store = Mov_mr
-    }
-  where
-    traverseVars ::
-      (Applicative m) =>
-      (forall a. var a -> m (var' a)) ->
-      Instruction MockIsa var ->
-      m (Instruction MockIsa var')
-    traverseVars f inst =
-      case inst of
-        Mov_ri dest imm ->
-          (\dest' -> Mov_ri dest' imm) <$> f dest
-        Mov_rm dest src ->
-          (\src' dest' -> Mov_rm dest' src') <$> f src <*> f dest
-        Mov_mi dest imm -> do
-          (\dest' -> Mov_mi dest' imm) <$> f dest
-        Mov_mr dest src -> do
-          (\src' dest' -> Mov_mr dest' src') <$> f src <*> f dest
-        Add_ri dest src imm -> do
-          (\src' dest' -> Add_ri dest' src' imm) <$> f src <*> f dest
-        Add_rr dest src1 src2 -> do
-          (\src1' src2' dest' -> Add_rr dest' src1' src2') <$> f src1 <*> f src2 <*> f dest
-
-    instructionVarInfo ::
-      (forall a. var a -> Word64) ->
-      Instruction MockIsa var ->
-      Instruction MockIsa (VarInfo MockIsa var)
-    instructionVarInfo varSize inst =
-      case inst of
-        Mov_ri dest imm ->
-          Mov_ri
-            (VarInfo DefNew VarReg dest)
-            imm
-        Mov_rm dest src ->
-          Mov_rm
-            (VarInfo DefNew VarReg dest)
-            (VarInfo (Use []) (VarMem $ varSize src) src)
-        Mov_mi dest imm ->
-          Mov_mi
-            (VarInfo DefNew (VarMem $ sizeOfImmediate @MockIsa imm) dest)
-            imm
-        Mov_mr dest src ->
-          Mov_mr
-            (VarInfo DefNew (VarMem $ varSize src) dest)
-            (VarInfo (Use []) VarReg src)
-        Add_ri dest src imm ->
-          Add_ri
-            (VarInfo (DefReuse src) VarReg dest)
-            (VarInfo (Use []) VarReg src)
-            imm
-        Add_rr dest src1 src2 ->
-          Add_rr
-            (VarInfo (DefReuse src1) VarReg dest)
-            (VarInfo (Use [src2]) VarReg src1)
-            (VarInfo (Use [src1]) VarReg src2)
