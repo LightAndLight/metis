@@ -1,11 +1,10 @@
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE QuantifiedConstraints #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE TypeOperators #-}
 
 module Test.RegisterAllocation (spec) where
 
@@ -23,14 +22,11 @@ import Metis.IsaNew (
   Immediate (..),
   Isa (..),
   generalPurposeRegisters,
-  mapVarsAddress,
-  traverseVarsAddress,
  )
 import Metis.RegisterAllocation (
   AllocRegisters (..),
   AllocRegistersEnv (..),
   AllocRegistersState (..),
-  Physical (..),
   Usage (..),
   VarInfo (..),
   allocRegisters,
@@ -59,50 +55,29 @@ instance Isa MockIsa where
   framePointerRegister = Rbp
 
   data Instruction MockIsa var
-    = Mov_ri (var (Register MockIsa)) Immediate
-    | Mov_rm (var (Register MockIsa)) (Address MockIsa var)
-    | Mov_mi (Address MockIsa var) Immediate
-    | Mov_mr (Address MockIsa var) (var (Register MockIsa))
-    | Add_ri (var (Register MockIsa)) (var (Register MockIsa)) Immediate
-    | Add_rr (var (Register MockIsa)) (var (Register MockIsa)) (var (Register MockIsa))
+    = Mov_ri var Immediate
+    | Mov_rm var (Address var)
+    | Mov_mi (Address var) Immediate
+    | Mov_mr (Address var) var
+    | Add_ri var var Immediate
+    | Add_rr var var var
+    deriving (Eq, Show, Functor, Foldable, Traversable)
 
 instance Hashable (Register MockIsa)
-deriving instance (forall a. (Show a) => Show (var a)) => Show (Instruction MockIsa var)
-deriving instance (forall a. (Eq a) => Eq (var a)) => Eq (Instruction MockIsa var)
 
 allocRegistersMockIsa :: AllocRegisters MockIsa
 allocRegistersMockIsa =
   AllocRegisters
-    { traverseVars
+    { traverseVars = traverse
     , instructionVarInfo
     , load = Mov_rm
     , store = Mov_mr
     }
   where
-    traverseVars ::
-      (Applicative m) =>
-      (forall a. (a ~ Register MockIsa) => var a -> m (var' a)) ->
-      Instruction MockIsa var ->
-      m (Instruction MockIsa var')
-    traverseVars f inst =
-      case inst of
-        Mov_ri dest imm ->
-          (\dest' -> Mov_ri dest' imm) <$> f dest
-        Mov_rm dest src ->
-          (\src' dest' -> Mov_rm dest' src') <$> traverseVarsAddress f src <*> f dest
-        Mov_mi dest imm -> do
-          (\dest' -> Mov_mi dest' imm) <$> traverseVarsAddress f dest
-        Mov_mr dest src -> do
-          (\src' dest' -> Mov_mr dest' src') <$> f src <*> traverseVarsAddress f dest
-        Add_ri dest src imm -> do
-          (\src' dest' -> Add_ri dest' src' imm) <$> f src <*> f dest
-        Add_rr dest src1 src2 -> do
-          (\src1' src2' dest' -> Add_rr dest' src1' src2') <$> f src1 <*> f src2 <*> f dest
-
     instructionVarInfo ::
-      (forall a. var a -> Word64) ->
+      (var -> Word64) ->
       Instruction MockIsa var ->
-      Instruction MockIsa (VarInfo MockIsa var)
+      Instruction MockIsa (VarInfo var)
     instructionVarInfo _varSize inst =
       case inst of
         Mov_ri dest imm ->
@@ -112,14 +87,14 @@ allocRegistersMockIsa =
         Mov_rm dest src ->
           Mov_rm
             (VarInfo DefNew dest)
-            (mapVarsAddress (VarInfo (Use [])) src)
+            (fmap (VarInfo (Use [])) src)
         Mov_mi dest imm ->
           Mov_mi
-            (mapVarsAddress (VarInfo (Use [])) dest)
+            (fmap (VarInfo (Use [])) dest)
             imm
         Mov_mr dest src ->
           Mov_mr
-            (mapVarsAddress (VarInfo (Use [])) dest)
+            (fmap (VarInfo (Use [])) dest)
             (VarInfo (Use []) src)
         Add_ri dest src imm ->
           Add_ri
@@ -162,24 +137,24 @@ spec =
               AllocRegistersEnv
                 { kills =
                     HashMap.fromList
-                      [ (SSA.AnyVar (SSA.unsafeVar 0), mempty)
-                      , (SSA.AnyVar (SSA.unsafeVar 1), mempty)
-                      , (SSA.AnyVar (SSA.unsafeVar 2), HashSet.fromList [SSA.AnyVar (SSA.unsafeVar 0), SSA.AnyVar (SSA.unsafeVar 1)])
-                      , (SSA.AnyVar (SSA.unsafeVar 3), mempty)
-                      , (SSA.AnyVar (SSA.unsafeVar 4), mempty)
-                      , (SSA.AnyVar (SSA.unsafeVar 5), HashSet.fromList [SSA.AnyVar (SSA.unsafeVar 3), SSA.AnyVar (SSA.unsafeVar 4)])
-                      , (SSA.AnyVar (SSA.unsafeVar 6), HashSet.fromList [SSA.AnyVar (SSA.unsafeVar 2), SSA.AnyVar (SSA.unsafeVar 5)])
+                      [ (SSA.unsafeVar 0, mempty)
+                      , (SSA.unsafeVar 1, mempty)
+                      , (SSA.unsafeVar 2, HashSet.fromList [SSA.unsafeVar 0, SSA.unsafeVar 1])
+                      , (SSA.unsafeVar 3, mempty)
+                      , (SSA.unsafeVar 4, mempty)
+                      , (SSA.unsafeVar 5, HashSet.fromList [SSA.unsafeVar 3, SSA.unsafeVar 4])
+                      , (SSA.unsafeVar 6, HashSet.fromList [SSA.unsafeVar 2, SSA.unsafeVar 5])
                       ]
                 }
             $ allocRegisters allocRegistersMockIsa input
       result
-        `shouldBe` [ Mov_ri (Register Rax) (Word64 1)
-                   , Mov_ri (Register Rbx) (Word64 2)
-                   , Add_rr (Register Rax) (Register Rax) (Register Rbx)
-                   , Mov_ri (Register Rbx) (Word64 3)
-                   , Mov_ri (Register Rcx) (Word64 4)
-                   , Add_rr (Register Rbx) (Register Rbx) (Register Rcx)
-                   , Add_rr (Register Rax) (Register Rax) (Register Rbx)
+        `shouldBe` [ Mov_ri Rax (Word64 1)
+                   , Mov_ri Rbx (Word64 2)
+                   , Add_rr Rax Rax Rbx
+                   , Mov_ri Rbx (Word64 3)
+                   , Mov_ri Rcx (Word64 4)
+                   , Add_rr Rbx Rbx Rcx
+                   , Add_rr Rax Rax Rbx
                    ]
 
     it "2" $ do
@@ -209,24 +184,24 @@ spec =
               AllocRegistersEnv
                 { kills =
                     HashMap.fromList
-                      [ (SSA.AnyVar (SSA.unsafeVar 0), mempty)
-                      , (SSA.AnyVar (SSA.unsafeVar 1), mempty)
-                      , (SSA.AnyVar (SSA.unsafeVar 2), HashSet.fromList [SSA.AnyVar (SSA.unsafeVar 0), SSA.AnyVar (SSA.unsafeVar 1)])
-                      , (SSA.AnyVar (SSA.unsafeVar 3), mempty)
-                      , (SSA.AnyVar (SSA.unsafeVar 4), mempty)
-                      , (SSA.AnyVar (SSA.unsafeVar 5), HashSet.fromList [SSA.AnyVar (SSA.unsafeVar 3), SSA.AnyVar (SSA.unsafeVar 4)])
-                      , (SSA.AnyVar (SSA.unsafeVar 6), HashSet.fromList [SSA.AnyVar (SSA.unsafeVar 2), SSA.AnyVar (SSA.unsafeVar 5)])
+                      [ (SSA.unsafeVar 0, mempty)
+                      , (SSA.unsafeVar 1, mempty)
+                      , (SSA.unsafeVar 2, HashSet.fromList [SSA.unsafeVar 0, SSA.unsafeVar 1])
+                      , (SSA.unsafeVar 3, mempty)
+                      , (SSA.unsafeVar 4, mempty)
+                      , (SSA.unsafeVar 5, HashSet.fromList [SSA.unsafeVar 3, SSA.unsafeVar 4])
+                      , (SSA.unsafeVar 6, HashSet.fromList [SSA.unsafeVar 2, SSA.unsafeVar 5])
                       ]
                 }
             $ allocRegisters allocRegistersMockIsa input
       result
-        `shouldBe` [ Mov_ri (Register Rax) (Word64 1)
-                   , Mov_ri (Register Rbx) (Word64 2)
-                   , Add_rr (Register Rax) (Register Rax) (Register Rbx)
-                   , Mov_ri (Register Rbx) (Word64 3)
-                   , Mov_mr Address{base = BaseVar $ Register Rbp, offset = -8} (Register Rax)
-                   , Mov_ri (Register Rax) (Word64 4)
-                   , Add_rr (Register Rbx) (Register Rbx) (Register Rax)
-                   , Mov_rm (Register Rax) Address{base = BaseVar $ Register Rbp, offset = -8}
-                   , Add_rr (Register Rax) (Register Rax) (Register Rbx)
+        `shouldBe` [ Mov_ri Rax (Word64 1)
+                   , Mov_ri Rbx (Word64 2)
+                   , Add_rr Rax Rax Rbx
+                   , Mov_ri Rbx (Word64 3)
+                   , Mov_mr Address{base = BaseVar Rbp, offset = -8} Rax
+                   , Mov_ri Rax (Word64 4)
+                   , Add_rr Rbx Rbx Rax
+                   , Mov_rm Rax Address{base = BaseVar Rbp, offset = -8}
+                   , Add_rr Rax Rax Rbx
                    ]

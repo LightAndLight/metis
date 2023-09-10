@@ -1,5 +1,6 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedRecordDot #-}
@@ -9,7 +10,6 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 module Metis.IsaNew (
@@ -19,12 +19,9 @@ module Metis.IsaNew (
   Address (..),
   AddressBase (..),
   addOffset,
-  traverseVarsAddress,
-  mapVarsAddress,
   Symbol (..),
 ) where
 
-import Data.Functor.Identity (Identity (..))
 import Data.Hashable (Hashable)
 import Data.Int (Int64)
 import Data.Kind (Type)
@@ -37,13 +34,13 @@ class
   ( Eq (Register isa)
   , Show (Register isa)
   , Hashable (Register isa)
-  , forall var. (forall a. (Eq a) => Eq (var a)) => Eq (Instruction isa var)
-  , forall var. (forall a. (Show a) => Show (var a)) => Show (Instruction isa var)
+  , forall var. (Eq var) => Eq (Instruction isa var)
+  , forall var. (Show var) => Show (Instruction isa var)
   ) =>
   Isa isa
   where
   data Register isa :: Type
-  data Instruction isa :: (Type -> Type) -> Type
+  data Instruction isa :: Type -> Type
 
   registerSize :: Register isa -> Word64
   pointerSize :: Word64
@@ -65,42 +62,24 @@ sizeOfImmediate i =
     Word64{} -> 8
     Label{} -> pointerSize @isa
 
-data Address isa var = Address {base :: AddressBase isa var, offset :: Int64}
-  deriving (Generic)
+data Address var = Address {base :: AddressBase var, offset :: Int64}
+  deriving (Functor, Foldable, Traversable, Generic)
 
-deriving instance (Isa isa, forall a. (Eq a) => Eq (var a)) => Eq (Address isa var)
-deriving instance (Isa isa, forall a. (Show a) => Show (var a)) => Show (Address isa var)
-instance (Isa isa, forall a. (Eq a) => Eq (var a), forall a. (Hashable a) => Hashable (var a)) => Hashable (Address isa var)
+deriving instance (Eq var) => Eq (Address var)
+deriving instance (Show var) => Show (Address var)
+instance (Hashable var) => Hashable (Address var)
 
-data AddressBase isa var
-  = BaseVar (var (Register isa))
+data AddressBase var
+  = BaseVar var
   | BaseLabel Symbol
-  deriving (Generic)
+  deriving (Functor, Foldable, Traversable, Generic)
 
-deriving instance (Isa isa, forall a. (Eq a) => Eq (var a)) => Eq (AddressBase isa var)
-deriving instance (Isa isa, forall a. (Show a) => Show (var a)) => Show (AddressBase isa var)
-instance (Isa isa, forall a. (Eq a) => Eq (var a), forall a. (Hashable a) => Hashable (var a)) => Hashable (AddressBase isa var)
+deriving instance (Eq var) => Eq (AddressBase var)
+deriving instance (Show var) => Show (AddressBase var)
+instance (Hashable var) => Hashable (AddressBase var)
 
-addOffset :: Address isa var -> Int64 -> Address isa var
+addOffset :: Address var -> Int64 -> Address var
 addOffset addr offset = addr{offset = addr.offset + offset}
-
-traverseVarsAddress ::
-  (Applicative m) =>
-  (forall a. (a ~ Register isa) => var a -> m (var' a)) ->
-  Address isa var ->
-  m (Address isa var')
-traverseVarsAddress f addr =
-  case addr.base of
-    BaseVar var ->
-      (\var' -> Address{base = BaseVar var', offset = addr.offset}) <$> f var
-    BaseLabel l ->
-      pure $ Address{base = BaseLabel l, offset = addr.offset}
-
-mapVarsAddress ::
-  (forall a. var a -> var' a) ->
-  Address isa var ->
-  Address isa var'
-mapVarsAddress f = runIdentity . traverseVarsAddress (Identity . f)
 
 newtype Symbol = Symbol {value :: Text}
   deriving (Eq, Show, Hashable)

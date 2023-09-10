@@ -14,7 +14,6 @@
 {-# LANGUAGE ViewPatterns #-}
 
 module Metis.RegisterAllocation (
-  Physical (..),
   AllocRegistersEnv (..),
   AllocRegistersState (..),
   Location (..),
@@ -40,50 +39,40 @@ import Data.Kind (Type)
 import qualified Data.Maybe as Maybe
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
-import Data.Type.Equality ((:~:) (..))
 import Data.Word (Word64)
 import Metis.IsaNew (Address (..), AddressBase (..), Isa (..))
 import qualified Metis.SSA.Var as SSA
 import Witherable (wither)
 
-data Physical :: Type -> Type -> Type where
-  Register :: Register isa -> Physical isa (Register isa)
-
-deriving instance (Isa isa) => Show (Physical isa a)
-deriving instance (Isa isa) => Eq (Physical isa a)
-
-physicalSize :: (Isa isa) => Physical isa a -> Word64
-physicalSize (Register reg) = registerSize reg
-
 data AllocRegistersEnv = AllocRegistersEnv
-  { kills :: HashMap SSA.AnyVar (HashSet SSA.AnyVar)
+  { kills :: HashMap SSA.Var (HashSet SSA.Var)
   }
 
 data AllocRegistersState isa = AllocRegistersState
-  { locations :: forall a. SSA.Var a -> Maybe (Location isa a)
-  , varSizes :: HashMap SSA.AnyVar Word64
+  { locations :: SSA.Var -> Maybe (Location isa)
+  , varSizes :: HashMap SSA.Var Word64
   , freeRegisters :: Seq (Register isa)
-  , occupiedRegisters :: HashMap (Register isa) (SSA.Var (Register isa))
-  , freeMemory :: HashMap Word64 (Seq (Address isa (Physical isa)))
+  , occupiedRegisters :: HashMap (Register isa) SSA.Var
+  , freeMemory :: HashMap Word64 (Seq (Address (Register isa)))
   , stackFrameTop :: Int64
   }
 
-data Location :: Type -> Type -> Type where
-  Spilled :: Address isa (Physical isa) -> Word64 -> Location isa (Register isa)
-  NotSpilled :: Physical isa a -> Location isa a
+data Location :: Type -> Type where
+  Spilled :: Address (Register isa) -> Word64 -> Location isa
+  NotSpilled :: Register isa -> Location isa
 
-deriving instance (Isa isa) => Show (Location isa a)
+deriving instance (Isa isa) => Show (Location isa)
 
 getRegister ::
   ( Isa isa
   , MonadReader AllocRegistersEnv m
   , MonadState (AllocRegistersState isa) m
-  , MonadWriter (DList (Instruction isa (Physical isa))) m
+  , MonadWriter (DList (Instruction isa (Register isa))) m
   ) =>
   AllocRegisters isa ->
-  SSA.Var (Register isa) ->
-  [SSA.Var (Register isa)] ->
-  m (Physical isa (Register isa))
+  SSA.Var ->
+  [SSA.Var] ->
+  m (Register isa)
 getRegister dict@AllocRegisters{load} var conflicts = do
   location <- gets (\AllocRegistersState{locations} -> Maybe.fromMaybe (error $ "virtual " <> show var <> " missing from map") $ locations var)
   case location of
@@ -97,27 +86,27 @@ getRegister dict@AllocRegisters{load} var conflicts = do
 
 setPhysical ::
   (Isa isa, MonadReader AllocRegistersEnv m, MonadState (AllocRegistersState isa) m) =>
-  SSA.Var a ->
-  Physical isa a ->
+  SSA.Var ->
+  Register isa ->
   m ()
 setPhysical var physical = do
   modify
     ( \s@AllocRegistersState{locations} ->
         s
           { locations = \var' ->
-              case SSA.eqVar var var' of
-                Just Refl ->
+              case var == var' of
+                True ->
                   Just $ NotSpilled physical
-                Nothing ->
+                False ->
                   locations var'
-          , varSizes = HashMap.insert (SSA.AnyVar var) (physicalSize physical) s.varSizes
+          , varSizes = HashMap.insert var (registerSize physical) s.varSizes
           }
     )
 
 setSpilled ::
   (MonadReader AllocRegistersEnv m, MonadState (AllocRegistersState isa) m) =>
-  SSA.Var (Register isa) ->
-  Address isa (Physical isa) ->
+  SSA.Var ->
+  Address (Register isa) ->
   Word64 ->
   m ()
 setSpilled var mem size =
@@ -125,32 +114,32 @@ setSpilled var mem size =
     ( \s@AllocRegistersState{locations} ->
         s
           { locations = \var' ->
-              case SSA.eqVar var var' of
-                Just Refl ->
+              case var == var' of
+                True ->
                   Just $ Spilled mem size
-                Nothing ->
+                False ->
                   locations var'
-          , varSizes = HashMap.insert (SSA.AnyVar var) size s.varSizes
+          , varSizes = HashMap.insert var size s.varSizes
           }
     )
 
 setOccupied ::
   (Isa isa, MonadState (AllocRegistersState isa) m) =>
-  Physical isa (Register isa) ->
-  SSA.Var (Register isa) ->
+  Register isa ->
+  SSA.Var ->
   m ()
-setOccupied (Register reg) var =
+setOccupied reg var =
   modify (\s -> s{occupiedRegisters = HashMap.insert reg var s.occupiedRegisters})
 
 allocateRegister ::
   ( Isa isa
   , MonadReader AllocRegistersEnv m
   , MonadState (AllocRegistersState isa) m
-  , MonadWriter (DList (Instruction isa (Physical isa))) m
+  , MonadWriter (DList (Instruction isa (Register isa))) m
   ) =>
   AllocRegisters isa ->
-  [SSA.Var (Register isa)] ->
-  m (Physical isa (Register isa))
+  [SSA.Var] ->
+  m (Register isa)
 allocateRegister AllocRegisters{store} conflicts = do
   freeRegisters <- gets (.freeRegisters)
   case Seq.viewl freeRegisters of
@@ -165,34 +154,32 @@ allocateRegister AllocRegisters{store} conflicts = do
                   pure Nothing
                 Just Spilled{} ->
                   pure Nothing
-                Just (NotSpilled (Register reg)) ->
+                Just (NotSpilled reg) ->
                   pure $ Just reg
           )
           conflicts
       case filter (\(r, _v) -> r `notElem` conflictingRegisters) $ HashMap.toList occupiedRegisters of
         [] ->
           error "not enough registers"
-        (reg, var :: SSA.Var (Register isa)) : _ -> do
+        (reg, var :: SSA.Var) : _ -> do
           let size = registerSize reg
           mem <- allocateLocal size
 
-          let occupiedRegister = Register reg
           setSpilled var mem size
 
-          tell . DList.singleton $ store mem occupiedRegister
-          pure occupiedRegister
+          tell . DList.singleton $ store mem reg
+          pure reg
     reg Seq.:< freeRegisters' -> do
-      let physical = Register reg
       modify (\s -> s{freeRegisters = freeRegisters'})
-      pure physical
+      pure reg
 
 assignRegister ::
   ( Isa isa
   , MonadReader AllocRegistersEnv m
   , MonadState (AllocRegistersState isa) m
   ) =>
-  SSA.Var (Register isa) ->
-  Physical isa (Register isa) ->
+  SSA.Var ->
+  Register isa ->
   m ()
 assignRegister var reg = do
   setOccupied reg var
@@ -203,7 +190,7 @@ allocateLocal ::
   (Isa isa) =>
   (MonadReader AllocRegistersEnv m, MonadState (AllocRegistersState isa) m) =>
   Word64 ->
-  m (Address isa (Physical isa))
+  m (Address (Register isa))
 allocateLocal size = do
   freeMemory <- gets (.freeMemory)
   case HashMap.lookup size freeMemory of
@@ -214,14 +201,14 @@ allocateLocal size = do
       stackFrameTop <- gets (.stackFrameTop)
       let nextStackFrameTop = stackFrameTop - fromIntegral @Word64 @Int64 size
       modify (\s -> s{stackFrameTop = nextStackFrameTop})
-      pure Address{base = BaseVar . Register $ framePointerRegister @isa, offset = nextStackFrameTop}
+      pure Address{base = BaseVar $ framePointerRegister @isa, offset = nextStackFrameTop}
 
 getKilledBy ::
   (MonadReader AllocRegistersEnv m, MonadState (AllocRegistersState isa) m) =>
-  SSA.Var a ->
-  m (HashSet SSA.AnyVar)
+  SSA.Var ->
+  m (HashSet SSA.Var)
 getKilledBy var =
-  asks (Maybe.fromMaybe mempty . HashMap.lookup (SSA.AnyVar var) . (.kills))
+  asks (Maybe.fromMaybe mempty . HashMap.lookup var . (.kills))
 
 freeVars ::
   ( Isa isa
@@ -229,18 +216,18 @@ freeVars ::
   , MonadState (AllocRegistersState isa) m
   , Foldable f
   ) =>
-  f SSA.AnyVar ->
+  f SSA.Var ->
   m ()
 freeVars vars =
-  for_ vars (\(SSA.AnyVar var) -> freeVar var)
+  for_ vars freeVar
 
 freeVar ::
-  forall isa m a.
+  forall isa m.
   ( Isa isa
   , MonadReader AllocRegistersEnv m
   , MonadState (AllocRegistersState isa) m
   ) =>
-  SSA.Var a ->
+  SSA.Var ->
   m ()
 freeVar var = do
   mLocation <- gets (\AllocRegistersState{locations} -> locations var)
@@ -261,7 +248,7 @@ freeVar var = do
                         s.freeMemory
                   }
             )
-        NotSpilled (Register reg) ->
+        NotSpilled reg ->
           modify
             ( \s ->
                 s
@@ -274,20 +261,20 @@ data AllocRegisters isa = AllocRegisters
   { traverseVars ::
       forall m var var'.
       (Applicative m) =>
-      (forall a. (a ~ Register isa) => var a -> m (var' a)) ->
+      (var -> m var') ->
       Instruction isa var ->
       m (Instruction isa var')
-  , instructionVarInfo :: forall var. (forall a. var a -> Word64) -> Instruction isa var -> Instruction isa (VarInfo isa var)
-  , load :: forall var. var (Register isa) -> Address isa var -> Instruction isa var
-  , store :: forall var. Address isa var -> var (Register isa) -> Instruction isa var
+  , instructionVarInfo :: forall var. (var -> Word64) -> Instruction isa var -> Instruction isa (VarInfo var)
+  , load :: forall var. var -> Address var -> Instruction isa var
+  , store :: forall var. Address var -> var -> Instruction isa var
   }
 
-data VarInfo isa var a
-  = VarInfo (Usage var a {- (VarType isa a) -}) (var a)
+data VarInfo var
+  = VarInfo (Usage var) var
 
-data Usage var a
-  = Use [var a]
-  | DefReuse (var a)
+data Usage var
+  = Use [var]
+  | DefReuse var
   | DefNew
 
 allocRegistersVar ::
@@ -295,13 +282,13 @@ allocRegistersVar ::
   ( Isa isa
   , MonadReader AllocRegistersEnv m
   , MonadState (AllocRegistersState isa) m
-  , MonadWriter (DList (Instruction isa (Physical isa))) m
+  , MonadWriter (DList (Instruction isa (Register isa))) m
   , a ~ Register isa
   ) =>
   AllocRegisters isa ->
-  VarInfo isa SSA.Var a ->
-  m (Physical isa a)
-allocRegistersVar dict (VarInfo info {- varType -} var) =
+  VarInfo SSA.Var ->
+  m (Register isa)
+allocRegistersVar dict (VarInfo info var) =
   case info of
     Use conflicts ->
       getRegister dict var conflicts
@@ -315,13 +302,13 @@ allocRegistersVar dict (VarInfo info {- varType -} var) =
       src' <- getRegister dict src []
 
       killedByDest <- getKilledBy var
-      freeVars (HashSet.delete (SSA.AnyVar src) killedByDest)
+      freeVars (HashSet.delete src killedByDest)
 
       assignRegister var src'
 
       pure src'
 
-newtype VarSizes = VarSizes (forall a. SSA.Var a -> Word64)
+newtype VarSizes = VarSizes (SSA.Var -> Word64)
 
 allocRegisters1 ::
   ( Isa isa
@@ -330,7 +317,7 @@ allocRegisters1 ::
   ) =>
   AllocRegisters isa ->
   Instruction isa SSA.Var ->
-  m [Instruction isa (Physical isa)]
+  m [Instruction isa (Register isa)]
 allocRegisters1 dict@AllocRegisters{traverseVars, instructionVarInfo} inst = do
   VarSizes f <- varSizesFunction
   (lastInst, insts) <- runWriterT $ traverseVars (allocRegistersVar dict) $ instructionVarInfo f inst
@@ -346,7 +333,7 @@ allocRegisters1 dict@AllocRegisters{traverseVars, instructionVarInfo} inst = do
               ( \var ->
                   Maybe.fromMaybe
                     (error $ "var " <> show var <> " not in sizes map")
-                    (HashMap.lookup (SSA.AnyVar var) s.varSizes)
+                    (HashMap.lookup var s.varSizes)
               )
         )
 
@@ -357,6 +344,6 @@ allocRegisters ::
   ) =>
   AllocRegisters isa ->
   [Instruction isa SSA.Var] ->
-  m [Instruction isa (Physical isa)]
+  m [Instruction isa (Register isa)]
 allocRegisters dict =
   fmap concat . traverse (allocRegisters1 dict)

@@ -29,11 +29,11 @@ import qualified Metis.Type as Type
 
 data InstSelState = InstSelState {stackFrameTop :: Int64}
 
-data VarOrRegister :: Type -> Type -> Type where
-  VVar :: SSA.Var (Register isa) -> VarOrRegister isa (Register isa)
-  RRegister :: Register isa -> VarOrRegister isa (Register isa)
+data VarOrRegister :: Type -> Type where
+  VVar :: SSA.Var -> VarOrRegister isa
+  RRegister :: Register isa -> VarOrRegister isa
 
-allocLocal :: forall isa m. (Isa isa, MonadState InstSelState m) => Word64 -> m (Address isa (VarOrRegister isa))
+allocLocal :: forall isa m. (Isa isa, MonadState InstSelState m) => Word64 -> m (Address (VarOrRegister isa))
 allocLocal size = do
   stackFrameTop <- gets (.stackFrameTop)
   let nextStackFrameTop = stackFrameTop - fromIntegral @Word64 @Int64 size
@@ -42,15 +42,15 @@ allocLocal size = do
 
 data Value isa
   = Immediate Immediate
-  | Var (SSA.Var (Register isa))
+  | Var SSA.Var
 
 instSelection_X86_64 ::
   ( MonadVar m
   , MonadState InstSelState m
   , MonadWriter (DList (Instruction X86_64 (VarOrRegister X86_64))) m
   ) =>
-  SSA.Instruction X86_64 ->
-  m (SSA.Var (Register X86_64))
+  SSA.Instruction ->
+  m SSA.Var
 instSelection_X86_64 inst =
   case inst of
     SSA.LetS var _ty value -> do
@@ -116,7 +116,7 @@ literalToImmediate l =
     Literal.Uint64 w -> Word64 w
     Literal.Bool b -> if b then Word64 1 else Word64 0
 
-simpleToValue :: Simple isa -> Value isa
+simpleToValue :: Simple -> Value isa
 simpleToValue simple =
   case simple of
     SSA.Var var ->
@@ -132,8 +132,8 @@ simpleToVar ::
   ( MonadVar m
   , MonadWriter (DList (Instruction X86_64 (VarOrRegister X86_64))) m
   ) =>
-  Simple X86_64 ->
-  m (SSA.Var (Register X86_64))
+  Simple ->
+  m SSA.Var
 simpleToVar simple =
   case simple of
     SSA.Var var ->
@@ -149,7 +149,7 @@ simpleToVar simple =
     SSA.Type _ty ->
       error "TODO: simpleToVar/Type"
 
-simpleToAddress :: Simple isa -> Address isa (VarOrRegister isa)
+simpleToAddress :: Simple -> Address (VarOrRegister isa)
 simpleToAddress simple =
   case simple of
     SSA.Var src ->

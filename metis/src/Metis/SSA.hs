@@ -11,29 +11,28 @@ module Metis.SSA (
 
 import Data.Int (Int64)
 import Data.Text (Text)
-import Metis.IsaNew (Register)
 import Metis.Literal (Literal)
-import Metis.SSA.Var (AnyVar, Var)
+import Metis.SSA.Var (Var)
 import Metis.Type (Type)
 
-data Instruction isa
-  = LetS (Var (Register isa)) (Type AnyVar) (Simple isa)
-  | LetC (Var (Register isa)) (Type AnyVar) (Compound isa)
+data Instruction
+  = LetS Var (Type Var) Simple
+  | LetC Var (Type Var) Compound
 
-data Simple isa
-  = Var (Var (Register isa))
+data Simple
+  = Var Var
   | Name Text
   | Literal Literal
-  | Type (Type AnyVar)
+  | Type (Type Var)
   deriving (Show, Eq)
 
-data Compound isa
-  = Binop Binop (Simple isa) (Simple isa)
-  | Call (Simple isa) [Simple isa]
-  | Alloca (Type AnyVar)
-  | Store (Simple isa) (Simple isa)
-  | Load (Simple isa)
-  | GetTypeDictField (Simple isa) TypeDictField
+data Compound
+  = Binop Binop Simple Simple
+  | Call Simple [Simple]
+  | Alloca (Type Var)
+  | Store Simple Simple
+  | Load Simple
+  | GetTypeDictField Simple TypeDictField
   deriving (Show, Eq)
 
 data TypeDictField
@@ -50,9 +49,9 @@ typeDictFieldOffset field =
 data Binop = Add | Subtract
   deriving (Show, Eq)
 
-data Terminator isa
-  = Return (Simple isa)
-  | IfThenElse (Simple isa) (Label, Simple isa) (Label, Simple isa)
-  | Jump Label (Simple isa)
+data Terminator
+  = Return Simple
+  | IfThenElse Simple (Label, Simple) (Label, Simple)
+  | Jump Label Simple
 
 newtype Label = Label Text
