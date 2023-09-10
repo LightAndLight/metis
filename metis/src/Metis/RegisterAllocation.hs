@@ -9,6 +9,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
 
@@ -20,7 +21,6 @@ module Metis.RegisterAllocation (
   AllocRegisters (..),
   VarInfo (..),
   Usage (..),
-  VarType (..),
   allocRegisters,
 ) where
 
@@ -48,33 +48,28 @@ import Witherable (wither)
 
 data Physical :: Type -> Type -> Type where
   Register :: Register isa -> Physical isa (Register isa)
-  Memory :: Address isa -> Word64 -> Physical isa (Address isa)
 
 deriving instance (Isa isa) => Show (Physical isa a)
 deriving instance (Isa isa) => Eq (Physical isa a)
 
 physicalSize :: (Isa isa) => Physical isa a -> Word64
 physicalSize (Register reg) = registerSize reg
-physicalSize (Memory _mem size) = size
 
 data AllocRegistersEnv = AllocRegistersEnv
   { kills :: HashMap SSA.AnyVar (HashSet SSA.AnyVar)
   }
 
 data AllocRegistersState isa = AllocRegistersState
-  { locations ::
-      forall a.
-      SSA.Var a ->
-      Maybe (Location isa a)
+  { locations :: forall a. SSA.Var a -> Maybe (Location isa a)
   , varSizes :: HashMap SSA.AnyVar Word64
   , freeRegisters :: Seq (Register isa)
   , occupiedRegisters :: HashMap (Register isa) (SSA.Var (Register isa))
-  , freeMemory :: HashMap Word64 (Seq (Address isa))
+  , freeMemory :: HashMap Word64 (Seq (Address isa (Physical isa)))
   , stackFrameTop :: Int64
   }
 
 data Location :: Type -> Type -> Type where
-  Spilled :: Address isa -> Word64 -> Location isa (Register isa)
+  Spilled :: Address isa (Physical isa) -> Word64 -> Location isa (Register isa)
   NotSpilled :: Physical isa a -> Location isa a
 
 deriving instance (Isa isa) => Show (Location isa a)
@@ -100,16 +95,6 @@ getRegister dict@AllocRegisters{load} var conflicts = do
     NotSpilled p ->
       pure p
 
-getMemory ::
-  (MonadReader AllocRegistersEnv m, MonadState (AllocRegistersState isa) m) =>
-  SSA.Var (Address isa) ->
-  m (Physical isa (Address isa))
-getMemory var = do
-  location <- gets (\AllocRegistersState{locations} -> Maybe.fromMaybe (error $ "virtual " <> show var <> " missing from map") $ locations var)
-  case location of
-    NotSpilled p ->
-      pure p
-
 setPhysical ::
   (Isa isa, MonadReader AllocRegistersEnv m, MonadState (AllocRegistersState isa) m) =>
   SSA.Var a ->
@@ -132,7 +117,7 @@ setPhysical var physical = do
 setSpilled ::
   (MonadReader AllocRegistersEnv m, MonadState (AllocRegistersState isa) m) =>
   SSA.Var (Register isa) ->
-  Address isa ->
+  Address isa (Physical isa) ->
   Word64 ->
   m ()
 setSpilled var mem size =
@@ -218,7 +203,7 @@ allocateLocal ::
   (Isa isa) =>
   (MonadReader AllocRegistersEnv m, MonadState (AllocRegistersState isa) m) =>
   Word64 ->
-  m (Address isa)
+  m (Address isa (Physical isa))
 allocateLocal size = do
   freeMemory <- gets (.freeMemory)
   case HashMap.lookup size freeMemory of
@@ -229,18 +214,7 @@ allocateLocal size = do
       stackFrameTop <- gets (.stackFrameTop)
       let nextStackFrameTop = stackFrameTop - fromIntegral @Word64 @Int64 size
       modify (\s -> s{stackFrameTop = nextStackFrameTop})
-      pure Address{base = BaseRegister $ framePointerRegister @isa, offset = nextStackFrameTop}
-
-assignLocal ::
-  ( Isa isa
-  , MonadReader AllocRegistersEnv m
-  , MonadState (AllocRegistersState isa) m
-  ) =>
-  SSA.Var (Address isa) ->
-  Physical isa (Address isa) ->
-  m ()
-assignLocal =
-  setPhysical
+      pure Address{base = BaseVar . Register $ framePointerRegister @isa, offset = nextStackFrameTop}
 
 getKilledBy ::
   (MonadReader AllocRegistersEnv m, MonadState (AllocRegistersState isa) m) =>
@@ -295,42 +269,26 @@ freeVar var = do
                   , occupiedRegisters = HashMap.delete reg s.occupiedRegisters
                   }
             )
-        NotSpilled (Memory mem size) ->
-          modify
-            ( \s ->
-                s
-                  { freeMemory =
-                      HashMap.insertWith
-                        (\new old -> old <> new)
-                        size
-                        (Seq.singleton mem)
-                        s.freeMemory
-                  }
-            )
 
 data AllocRegisters isa = AllocRegisters
   { traverseVars ::
       forall m var var'.
       (Applicative m) =>
-      (forall a. var a -> m (var' a)) ->
+      (forall a. (a ~ Register isa) => var a -> m (var' a)) ->
       Instruction isa var ->
       m (Instruction isa var')
   , instructionVarInfo :: forall var. (forall a. var a -> Word64) -> Instruction isa var -> Instruction isa (VarInfo isa var)
-  , load :: forall var. var (Register isa) -> Address isa -> Instruction isa var
-  , store :: forall var. Address isa -> var (Register isa) -> Instruction isa var
+  , load :: forall var. var (Register isa) -> Address isa var -> Instruction isa var
+  , store :: forall var. Address isa var -> var (Register isa) -> Instruction isa var
   }
 
 data VarInfo isa var a
-  = VarInfo (Usage var a) (VarType isa a) (var a)
+  = VarInfo (Usage var a {- (VarType isa a) -}) (var a)
 
 data Usage var a
   = Use [var a]
   | DefReuse (var a)
   | DefNew
-
-data VarType :: Type -> Type -> Type where
-  VarReg :: VarType isa (Register isa)
-  VarMem :: Word64 -> VarType isa (Address isa)
 
 allocRegistersVar ::
   forall isa m a.
@@ -338,54 +296,28 @@ allocRegistersVar ::
   , MonadReader AllocRegistersEnv m
   , MonadState (AllocRegistersState isa) m
   , MonadWriter (DList (Instruction isa (Physical isa))) m
+  , a ~ Register isa
   ) =>
   AllocRegisters isa ->
   VarInfo isa SSA.Var a ->
   m (Physical isa a)
-allocRegistersVar dict (VarInfo info varType var) =
+allocRegistersVar dict (VarInfo info {- varType -} var) =
   case info of
     Use conflicts ->
-      case varType of
-        VarMem _size ->
-          getMemory var
-        VarReg ->
-          getRegister dict var conflicts
+      getRegister dict var conflicts
     DefNew -> do
       freeVars =<< getKilledBy var
 
-      case varType of
-        VarReg -> do
-          dest <- allocateRegister dict []
-          assignRegister var dest
-          pure dest
-        VarMem size -> do
-          dest <- allocateLocal size
-          let mem = Memory dest size
-          assignLocal var mem
-          pure mem
+      dest <- allocateRegister dict []
+      assignRegister var dest
+      pure dest
     DefReuse src -> do
-      src' <-
-        case varType of
-          VarReg ->
-            getRegister dict src []
-          VarMem _size ->
-            getMemory src
+      src' <- getRegister dict src []
 
       killedByDest <- getKilledBy var
       freeVars (HashSet.delete (SSA.AnyVar src) killedByDest)
 
-      let
-        {-# INLINE assign #-}
-        assign =
-          case varType of
-            VarReg ->
-              assignRegister var src'
-            VarMem _size ->
-              assignLocal var src'
-
-      -- I need to give this expression a type signature, and `fourmolu` crashes if I parenthesise
-      -- the `case` expression and give it a type. Factoring out the expression fixes it.
-      assign :: m ()
+      assignRegister var src'
 
       pure src'
 

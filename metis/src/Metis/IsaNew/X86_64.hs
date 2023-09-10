@@ -3,8 +3,8 @@
 {-# LANGUAGE QuantifiedConstraints #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
 
 module Metis.IsaNew.X86_64 (
   X86_64,
@@ -17,8 +17,8 @@ import Data.Hashable (Hashable)
 import qualified Data.Sequence as Seq
 import Data.Word (Word64)
 import GHC.Generics (Generic)
-import Metis.IsaNew (Address, Immediate, Isa (..), Symbol)
-import Metis.RegisterAllocation (AllocRegisters (..), Usage (..), VarInfo (..), VarType (..))
+import Metis.IsaNew (Address (..), Immediate, Isa (..), Symbol, mapVarsAddress, traverseVarsAddress)
+import Metis.RegisterAllocation (AllocRegisters (..), Usage (..), VarInfo {- VarType (..) -} (..))
 
 data X86_64
 
@@ -103,7 +103,7 @@ instance Isa X86_64 where
 
   data Instruction X86_64 var
     = Push_r (var (Register X86_64))
-    | Push_m (Address X86_64)
+    | Push_m (Address X86_64 var)
     | Push_i Immediate
     | Pop_r (var (Register X86_64))
     | Call_s Symbol
@@ -111,18 +111,18 @@ instance Isa X86_64 where
     | Je_s Symbol
     | Jmp_s Symbol
     | Jmp_r (var (Register X86_64))
-    | Jmp_m (Address X86_64)
+    | Jmp_m (Address X86_64 var)
     | Ret
     | Ret_i Immediate
     | Mov_ri (var (Register X86_64)) Immediate
     | Mov_rr (var (Register X86_64)) (var (Register X86_64))
-    | Mov_rm (var (Register X86_64)) (Address X86_64)
-    | Mov_mi (Address X86_64) Immediate
-    | Mov_mr (Address X86_64) (var (Register X86_64))
-    | Lea_rm (var (Register X86_64)) (Address X86_64)
+    | Mov_rm (var (Register X86_64)) (Address X86_64 var)
+    | Mov_mi (Address X86_64 var) Immediate
+    | Mov_mr (Address X86_64 var) (var (Register X86_64))
+    | Lea_rm (var (Register X86_64)) (Address X86_64 var)
     | Lea_rs (var (Register X86_64)) Symbol
     | Cmp_ri (var (Register X86_64)) Immediate
-    | Cmp_mi (Address X86_64) Immediate
+    | Cmp_mi (Address X86_64 var) Immediate
     | Add_ri (var (Register X86_64)) (var (Register X86_64)) Immediate
     | Add_rr (var (Register X86_64)) (var (Register X86_64)) (var (Register X86_64))
     | Sub_ri (var (Register X86_64)) (var (Register X86_64)) Immediate
@@ -145,7 +145,7 @@ allocRegisters_X86_64 =
     traverseVars ::
       forall m var var'.
       (Applicative m) =>
-      (forall a. var a -> m (var' a)) ->
+      (forall a. (a ~ Register X86_64) => var a -> m (var' a)) ->
       Instruction X86_64 var ->
       m (Instruction X86_64 var')
     traverseVars f inst =
@@ -153,7 +153,7 @@ allocRegisters_X86_64 =
         Push_r a ->
           Push_r <$> f a
         Push_m a ->
-          pure $ Push_m a
+          Push_m <$> traverseVarsAddress f a
         Push_i a ->
           pure $ Push_i a
         Pop_r a ->
@@ -169,7 +169,7 @@ allocRegisters_X86_64 =
         Jmp_r a ->
           Jmp_r <$> f a
         Jmp_m a ->
-          pure $ Jmp_m a
+          Jmp_m <$> traverseVarsAddress f a
         Ret ->
           pure Ret
         Ret_i a ->
@@ -179,19 +179,19 @@ allocRegisters_X86_64 =
         Mov_rr a b ->
           Mov_rr <$> f a <*> f b
         Mov_rm a b ->
-          (\a' -> Mov_rm a' b) <$> f a
+          Mov_rm <$> f a <*> traverseVarsAddress f b
         Mov_mi a b ->
-          pure $ Mov_mi a b
+          (\a' -> Mov_mi a' b) <$> traverseVarsAddress f a
         Mov_mr a b ->
-          Mov_mr a <$> f b
+          Mov_mr <$> traverseVarsAddress f a <*> f b
         Lea_rm a b ->
-          (\a' -> Lea_rm a' b) <$> f a
+          Lea_rm <$> f a <*> traverseVarsAddress f b
         Lea_rs a b ->
           (\a' -> Lea_rs a' b) <$> f a
         Cmp_ri a b ->
           (\a' -> Cmp_ri a' b) <$> f a
         Cmp_mi a b ->
-          pure $ Cmp_mi a b
+          (\a' -> Cmp_mi a' b) <$> traverseVarsAddress f a
         Add_ri a b c ->
           (\a' b' -> Add_ri a' b' c) <$> f a <*> f b
         Add_rr a b c ->
@@ -209,52 +209,52 @@ allocRegisters_X86_64 =
     instructionVarInfo _varSize inst =
       case inst of
         Push_r a ->
-          Push_r (VarInfo (Use []) VarReg a)
+          Push_r (VarInfo (Use []) a)
         Push_m a ->
-          Push_m a
+          Push_m $ mapVarsAddress (VarInfo (Use [])) a
         Push_i a ->
           Push_i a
         Pop_r a ->
-          Pop_r (VarInfo (Use []) VarReg a)
+          Pop_r (VarInfo (Use []) a)
         Call_s a ->
           Call_s a
         Call_r a ->
-          Call_r (VarInfo (Use []) VarReg a)
+          Call_r (VarInfo (Use []) a)
         Je_s a ->
           Je_s a
         Jmp_s a ->
           Jmp_s a
         Jmp_r a ->
-          Jmp_r (VarInfo (Use []) VarReg a)
+          Jmp_r (VarInfo (Use []) a)
         Jmp_m a ->
-          Jmp_m a
+          Jmp_m $ mapVarsAddress (VarInfo (Use [])) a
         Ret ->
           Ret
         Ret_i a ->
           Ret_i a
         Mov_ri a b ->
-          Mov_ri (VarInfo DefNew VarReg a) b
+          Mov_ri (VarInfo DefNew a) b
         Mov_rr a b ->
-          Mov_rr (VarInfo DefNew VarReg a) (VarInfo (Use []) VarReg b)
+          Mov_rr (VarInfo DefNew a) (VarInfo (Use []) b)
         Mov_rm a b ->
-          Mov_rm (VarInfo DefNew VarReg a) b
+          Mov_rm (VarInfo DefNew a) (mapVarsAddress (VarInfo (Use [])) b)
         Mov_mi a b ->
-          Mov_mi a b
+          Mov_mi (mapVarsAddress (VarInfo (Use [])) a) b
         Mov_mr a b ->
-          Mov_mr a (VarInfo (Use []) VarReg b)
+          Mov_mr (mapVarsAddress (VarInfo (Use [])) a) (VarInfo (Use []) b)
         Lea_rm a b ->
-          Lea_rm (VarInfo DefNew VarReg a) b
+          Lea_rm (VarInfo DefNew a) (mapVarsAddress (VarInfo (Use [])) b)
         Lea_rs a b ->
-          Lea_rs (VarInfo DefNew VarReg a) b
+          Lea_rs (VarInfo DefNew a) b
         Cmp_ri a b ->
-          Cmp_ri (VarInfo (Use []) VarReg a) b
+          Cmp_ri (VarInfo (Use []) a) b
         Cmp_mi a b ->
-          Cmp_mi a b
+          Cmp_mi (mapVarsAddress (VarInfo (Use [])) a) b
         Add_ri a b c ->
-          Add_ri (VarInfo (DefReuse b) VarReg a) (VarInfo (Use []) VarReg b) c
+          Add_ri (VarInfo (DefReuse b) a) (VarInfo (Use []) b) c
         Add_rr a b c ->
-          Add_rr (VarInfo (DefReuse b) VarReg a) (VarInfo (Use [c]) VarReg b) (VarInfo (Use [b]) VarReg c)
+          Add_rr (VarInfo (DefReuse b) a) (VarInfo (Use [c]) b) (VarInfo (Use [b]) c)
         Sub_ri a b c ->
-          Sub_ri (VarInfo (DefReuse b) VarReg a) (VarInfo (Use []) VarReg b) c
+          Sub_ri (VarInfo (DefReuse b) a) (VarInfo (Use []) b) c
         Sub_rr a b c ->
-          Sub_rr (VarInfo (DefReuse b) VarReg a) (VarInfo (Use [c]) VarReg b) (VarInfo (Use [b]) VarReg c)
+          Sub_rr (VarInfo (DefReuse b) a) (VarInfo (Use [c]) b) (VarInfo (Use [b]) c)

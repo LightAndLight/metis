@@ -5,6 +5,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
 
 module Test.RegisterAllocation (spec) where
 
@@ -16,8 +17,24 @@ import Data.Hashable (Hashable)
 import qualified Data.Sequence as Seq
 import Data.Word (Word64)
 import GHC.Generics (Generic)
-import Metis.IsaNew (Immediate (..), Isa (..), Memory (..), MemoryBase (..), generalPurposeRegisters, sizeOfImmediate)
-import Metis.RegisterAllocation (AllocRegisters (..), AllocRegistersEnv (..), AllocRegistersState (..), Physical (..), Usage (..), VarInfo (..), VarType (..), allocRegisters)
+import Metis.IsaNew (
+  Address (..),
+  AddressBase (..),
+  Immediate (..),
+  Isa (..),
+  generalPurposeRegisters,
+  mapVarsAddress,
+  traverseVarsAddress,
+ )
+import Metis.RegisterAllocation (
+  AllocRegisters (..),
+  AllocRegistersEnv (..),
+  AllocRegistersState (..),
+  Physical (..),
+  Usage (..),
+  VarInfo (..),
+  allocRegisters,
+ )
 import qualified Metis.SSA.Var as SSA
 import Test.Hspec (Spec, describe, it, shouldBe)
 
@@ -43,9 +60,9 @@ instance Isa MockIsa where
 
   data Instruction MockIsa var
     = Mov_ri (var (Register MockIsa)) Immediate
-    | Mov_rm (var (Register MockIsa)) (var (Memory MockIsa))
-    | Mov_mi (var (Memory MockIsa)) Immediate
-    | Mov_mr (var (Memory MockIsa)) (var (Register MockIsa))
+    | Mov_rm (var (Register MockIsa)) (Address MockIsa var)
+    | Mov_mi (Address MockIsa var) Immediate
+    | Mov_mr (Address MockIsa var) (var (Register MockIsa))
     | Add_ri (var (Register MockIsa)) (var (Register MockIsa)) Immediate
     | Add_rr (var (Register MockIsa)) (var (Register MockIsa)) (var (Register MockIsa))
 
@@ -64,7 +81,7 @@ allocRegistersMockIsa =
   where
     traverseVars ::
       (Applicative m) =>
-      (forall a. var a -> m (var' a)) ->
+      (forall a. (a ~ Register MockIsa) => var a -> m (var' a)) ->
       Instruction MockIsa var ->
       m (Instruction MockIsa var')
     traverseVars f inst =
@@ -72,11 +89,11 @@ allocRegistersMockIsa =
         Mov_ri dest imm ->
           (\dest' -> Mov_ri dest' imm) <$> f dest
         Mov_rm dest src ->
-          (\src' dest' -> Mov_rm dest' src') <$> f src <*> f dest
+          (\src' dest' -> Mov_rm dest' src') <$> traverseVarsAddress f src <*> f dest
         Mov_mi dest imm -> do
-          (\dest' -> Mov_mi dest' imm) <$> f dest
+          (\dest' -> Mov_mi dest' imm) <$> traverseVarsAddress f dest
         Mov_mr dest src -> do
-          (\src' dest' -> Mov_mr dest' src') <$> f src <*> f dest
+          (\src' dest' -> Mov_mr dest' src') <$> f src <*> traverseVarsAddress f dest
         Add_ri dest src imm -> do
           (\src' dest' -> Add_ri dest' src' imm) <$> f src <*> f dest
         Add_rr dest src1 src2 -> do
@@ -86,34 +103,34 @@ allocRegistersMockIsa =
       (forall a. var a -> Word64) ->
       Instruction MockIsa var ->
       Instruction MockIsa (VarInfo MockIsa var)
-    instructionVarInfo varSize inst =
+    instructionVarInfo _varSize inst =
       case inst of
         Mov_ri dest imm ->
           Mov_ri
-            (VarInfo DefNew VarReg dest)
+            (VarInfo DefNew dest)
             imm
         Mov_rm dest src ->
           Mov_rm
-            (VarInfo DefNew VarReg dest)
-            (VarInfo (Use []) (VarMem $ varSize src) src)
+            (VarInfo DefNew dest)
+            (mapVarsAddress (VarInfo (Use [])) src)
         Mov_mi dest imm ->
           Mov_mi
-            (VarInfo DefNew (VarMem $ sizeOfImmediate @MockIsa imm) dest)
+            (mapVarsAddress (VarInfo (Use [])) dest)
             imm
         Mov_mr dest src ->
           Mov_mr
-            (VarInfo DefNew (VarMem $ varSize src) dest)
-            (VarInfo (Use []) VarReg src)
+            (mapVarsAddress (VarInfo (Use [])) dest)
+            (VarInfo (Use []) src)
         Add_ri dest src imm ->
           Add_ri
-            (VarInfo (DefReuse src) VarReg dest)
-            (VarInfo (Use []) VarReg src)
+            (VarInfo (DefReuse src) dest)
+            (VarInfo (Use []) src)
             imm
         Add_rr dest src1 src2 ->
           Add_rr
-            (VarInfo (DefReuse src1) VarReg dest)
-            (VarInfo (Use [src2]) VarReg src1)
-            (VarInfo (Use [src1]) VarReg src2)
+            (VarInfo (DefReuse src1) dest)
+            (VarInfo (Use [src2]) src1)
+            (VarInfo (Use [src1]) src2)
 
 spec :: Spec
 spec =
@@ -207,9 +224,9 @@ spec =
                    , Mov_ri (Register Rbx) (Word64 2)
                    , Add_rr (Register Rax) (Register Rax) (Register Rbx)
                    , Mov_ri (Register Rbx) (Word64 3)
-                   , Mov_mr (Memory Mem{base = BaseRegister Rbp, offset = -8} 8) (Register Rax)
+                   , Mov_mr Address{base = BaseVar $ Register Rbp, offset = -8} (Register Rax)
                    , Mov_ri (Register Rax) (Word64 4)
                    , Add_rr (Register Rbx) (Register Rbx) (Register Rax)
-                   , Mov_rm (Register Rax) (Memory Mem{base = BaseRegister Rbp, offset = -8} 8)
+                   , Mov_rm (Register Rax) Address{base = BaseVar $ Register Rbp, offset = -8}
                    , Add_rr (Register Rax) (Register Rax) (Register Rbx)
                    ]
