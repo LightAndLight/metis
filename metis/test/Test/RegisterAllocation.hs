@@ -11,15 +11,14 @@ import Metis.IsaNew (Immediate (..), Memory (..), MemoryBase (..), generalPurpos
 import Metis.RegisterAllocation (
   AllocRegistersEnv (..),
   AllocRegistersState (..),
-  AnyVirtual (..),
   Instruction (..),
   MockIsa,
   Physical (..),
   Register (..),
-  Virtual (..),
   allocRegisters,
   allocRegistersMockIsa,
  )
+import qualified Metis.SSA.Var as SSA
 import Test.Hspec (Spec, describe, it, shouldBe)
 
 spec :: Spec
@@ -27,13 +26,13 @@ spec =
   describe "Test.RegisterAllocation" $ do
     it "1" $ do
       let input =
-            [ Mov_ri (Virtual 0) (Word64 1)
-            , Mov_ri (Virtual 1) (Word64 2)
-            , Add_rr (Virtual 2) (Virtual 0) (Virtual 1)
-            , Mov_ri (Virtual 3) (Word64 3)
-            , Mov_ri (Virtual 4) (Word64 4)
-            , Add_rr (Virtual 5) (Virtual 3) (Virtual 4)
-            , Add_rr (Virtual 6) (Virtual 2) (Virtual 5)
+            [ Mov_ri (SSA.unsafeVar 0) (Word64 1)
+            , Mov_ri (SSA.unsafeVar 1) (Word64 2)
+            , Add_rr (SSA.unsafeVar 2) (SSA.unsafeVar 0) (SSA.unsafeVar 1)
+            , Mov_ri (SSA.unsafeVar 3) (Word64 3)
+            , Mov_ri (SSA.unsafeVar 4) (Word64 4)
+            , Add_rr (SSA.unsafeVar 5) (SSA.unsafeVar 3) (SSA.unsafeVar 4)
+            , Add_rr (SSA.unsafeVar 6) (SSA.unsafeVar 2) (SSA.unsafeVar 5)
             ]
       let
         result =
@@ -52,13 +51,13 @@ spec =
               AllocRegistersEnv
                 { kills =
                     HashMap.fromList
-                      [ (AnyVirtual (Virtual 0), mempty)
-                      , (AnyVirtual (Virtual 1), mempty)
-                      , (AnyVirtual (Virtual 2), HashSet.fromList [AnyVirtual (Virtual 0), AnyVirtual (Virtual 1)])
-                      , (AnyVirtual (Virtual 3), mempty)
-                      , (AnyVirtual (Virtual 4), mempty)
-                      , (AnyVirtual (Virtual 5), HashSet.fromList [AnyVirtual (Virtual 3), AnyVirtual (Virtual 4)])
-                      , (AnyVirtual (Virtual 6), HashSet.fromList [AnyVirtual (Virtual 2), AnyVirtual (Virtual 5)])
+                      [ (SSA.AnyVar (SSA.unsafeVar 0), mempty)
+                      , (SSA.AnyVar (SSA.unsafeVar 1), mempty)
+                      , (SSA.AnyVar (SSA.unsafeVar 2), HashSet.fromList [SSA.AnyVar (SSA.unsafeVar 0), SSA.AnyVar (SSA.unsafeVar 1)])
+                      , (SSA.AnyVar (SSA.unsafeVar 3), mempty)
+                      , (SSA.AnyVar (SSA.unsafeVar 4), mempty)
+                      , (SSA.AnyVar (SSA.unsafeVar 5), HashSet.fromList [SSA.AnyVar (SSA.unsafeVar 3), SSA.AnyVar (SSA.unsafeVar 4)])
+                      , (SSA.AnyVar (SSA.unsafeVar 6), HashSet.fromList [SSA.AnyVar (SSA.unsafeVar 2), SSA.AnyVar (SSA.unsafeVar 5)])
                       ]
                 }
             $ allocRegisters allocRegistersMockIsa input
@@ -74,13 +73,13 @@ spec =
 
     it "2" $ do
       let input =
-            [ Mov_ri (Virtual 0) (Word64 1)
-            , Mov_ri (Virtual 1) (Word64 2)
-            , Add_rr (Virtual 2) (Virtual 0) (Virtual 1)
-            , Mov_ri (Virtual 3) (Word64 3)
-            , Mov_ri (Virtual 4) (Word64 4)
-            , Add_rr (Virtual 5) (Virtual 3) (Virtual 4)
-            , Add_rr (Virtual 6) (Virtual 2) (Virtual 5)
+            [ Mov_ri (SSA.unsafeVar 0) (Word64 1)
+            , Mov_ri (SSA.unsafeVar 1) (Word64 2)
+            , Add_rr (SSA.unsafeVar 2) (SSA.unsafeVar 0) (SSA.unsafeVar 1)
+            , Mov_ri (SSA.unsafeVar 3) (Word64 3)
+            , Mov_ri (SSA.unsafeVar 4) (Word64 4)
+            , Add_rr (SSA.unsafeVar 5) (SSA.unsafeVar 3) (SSA.unsafeVar 4)
+            , Add_rr (SSA.unsafeVar 6) (SSA.unsafeVar 2) (SSA.unsafeVar 5)
             ]
       let
         result =
@@ -99,13 +98,13 @@ spec =
               AllocRegistersEnv
                 { kills =
                     HashMap.fromList
-                      [ (AnyVirtual (Virtual 0), mempty)
-                      , (AnyVirtual (Virtual 1), mempty)
-                      , (AnyVirtual (Virtual 2), HashSet.fromList [AnyVirtual (Virtual 0), AnyVirtual (Virtual 1)])
-                      , (AnyVirtual (Virtual 3), mempty)
-                      , (AnyVirtual (Virtual 4), mempty)
-                      , (AnyVirtual (Virtual 5), HashSet.fromList [AnyVirtual (Virtual 3), AnyVirtual (Virtual 4)])
-                      , (AnyVirtual (Virtual 6), HashSet.fromList [AnyVirtual (Virtual 2), AnyVirtual (Virtual 5)])
+                      [ (SSA.AnyVar (SSA.unsafeVar 0), mempty)
+                      , (SSA.AnyVar (SSA.unsafeVar 1), mempty)
+                      , (SSA.AnyVar (SSA.unsafeVar 2), HashSet.fromList [SSA.AnyVar (SSA.unsafeVar 0), SSA.AnyVar (SSA.unsafeVar 1)])
+                      , (SSA.AnyVar (SSA.unsafeVar 3), mempty)
+                      , (SSA.AnyVar (SSA.unsafeVar 4), mempty)
+                      , (SSA.AnyVar (SSA.unsafeVar 5), HashSet.fromList [SSA.AnyVar (SSA.unsafeVar 3), SSA.AnyVar (SSA.unsafeVar 4)])
+                      , (SSA.AnyVar (SSA.unsafeVar 6), HashSet.fromList [SSA.AnyVar (SSA.unsafeVar 2), SSA.AnyVar (SSA.unsafeVar 5)])
                       ]
                 }
             $ allocRegisters allocRegistersMockIsa input

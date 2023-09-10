@@ -41,6 +41,7 @@ library
         Metis.Liveness
         Metis.Log
         Metis.RegisterAllocation
+        Metis.SSA.Var
         Metis.Type
     -- other-modules:
     -- other-extensions:
