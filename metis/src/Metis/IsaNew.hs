@@ -15,6 +15,7 @@ module Metis.IsaNew (
   sizeOfImmediate,
   Memory (..),
   MemoryBase (..),
+  Symbol (..),
 ) where
 
 import Data.Hashable (Hashable)
