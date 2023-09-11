@@ -2,10 +2,12 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Metis.InstSelectionNew (
+  InstSelEnv (..),
   InstSelState (..),
   Var (..),
   Value (..),
@@ -13,17 +15,36 @@ module Metis.InstSelectionNew (
   simpleToValue,
   allocLocal,
   simpleToAddress,
+  InstSelection (..),
+  instSelectionArgs,
+  instSelectionReturn,
 ) where
 
 import Control.Monad.State.Class (MonadState, gets, modify)
+import Control.Monad.Writer.Class (MonadWriter, tell)
+import Data.DList (DList)
+import qualified Data.DList as DList
 import Data.Int (Int64)
+import Data.Sequence (Seq)
+import qualified Data.Sequence as Seq
+import Data.Text (Text)
 import Data.Word (Word64)
-import Metis.IsaNew (Address (..), AddressBase (..), Immediate (..), Isa, Register, Symbol (..), framePointerRegister)
+import Metis.IsaNew (Address (..), AddressBase (..), Immediate (..), Instruction, Isa, Register, Symbol (..), framePointerRegister)
+import Metis.Kind (Kind)
 import Metis.Literal (Literal)
 import qualified Metis.Literal as Literal
 import Metis.SSA (Simple)
 import qualified Metis.SSA as SSA
+import Metis.SSA.Var (MonadVar)
 import qualified Metis.SSA.Var as SSA (Var)
+import Metis.Type (Type)
+import qualified Metis.Type as Type
+
+data InstSelEnv = InstSelEnv
+  { varKinds :: SSA.Var -> Kind
+  , nameTys :: Text -> Type SSA.Var
+  , varTys :: SSA.Var -> Type SSA.Var
+  }
 
 data InstSelState = InstSelState {stackFrameTop :: Int64}
 
@@ -74,3 +95,47 @@ simpleToAddress simple =
       error $ "literal is not an address: " <> show lit
     SSA.Type _ty ->
       error "TODO: simpleToAddress/Type"
+
+data InstSelection isa = InstSelection
+  { move :: forall var. var -> var -> Instruction isa var
+  }
+
+instSelectionArgs ::
+  (MonadVar m, MonadWriter (DList (Instruction isa (Var isa))) m) =>
+  InstSelection isa ->
+  Seq (Register isa) ->
+  [SSA.Var] ->
+  [Type SSA.Var] ->
+  m ()
+instSelectionArgs dict@InstSelection{move} inputRegisters args argTys =
+  case (args, argTys) of
+    ([], []) ->
+      pure ()
+    (arg : args', argTy : argTys') ->
+      case Type.callingConventionOf argTy of
+        Type.Register ->
+          case Seq.viewl inputRegisters of
+            Seq.EmptyL ->
+              error "TODO: instSelectionArgs/Register/EmptyL"
+            reg Seq.:< inputRegisters' -> do
+              tell . DList.singleton $ move (Physical (Just arg) reg) (Virtual arg)
+              instSelectionArgs dict inputRegisters' args' argTys'
+        Type.Composite{} ->
+          error "TODO: instSelectionArgs/Composite"
+        Type.Erased{} ->
+          error "TODO: instSelectionArgs/Erased"
+    _ -> error $ "different number of args and arg types: " <> show args <> ", " <> show argTys
+
+instSelectionReturn :: Seq (Register isa) -> SSA.Var -> Type SSA.Var -> Var isa
+instSelectionReturn outputRegisters dest retTy =
+  case Type.callingConventionOf retTy of
+    Type.Register ->
+      case Seq.viewl outputRegisters of
+        Seq.EmptyL ->
+          error "TODO: instSelectionReturn/Register/EmptyL"
+        register Seq.:< _outputRegisters' ->
+          Physical (Just dest) register
+    Type.Composite{} ->
+      error "TODO: instSelectionReturn/Composite"
+    Type.Erased{} ->
+      error "TODO: instSelectionReturn/Erased"
