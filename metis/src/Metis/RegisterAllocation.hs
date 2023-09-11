@@ -49,7 +49,7 @@ data AllocRegistersEnv = AllocRegistersEnv
   }
 
 data AllocRegistersState isa = AllocRegistersState
-  { locations :: SSA.Var -> Maybe (Location isa)
+  { locations :: HashMap SSA.Var (Location isa)
   , varSizes :: HashMap SSA.Var Word64
   , freeRegisters :: Seq (Register isa)
   , occupiedRegisters :: HashMap (Register isa) SSA.Var
@@ -74,7 +74,13 @@ getRegister ::
   [SSA.Var] ->
   m (Register isa)
 getRegister dict@AllocRegisters{load} var conflicts = do
-  location <- gets (\AllocRegistersState{locations} -> Maybe.fromMaybe (error $ "virtual " <> show var <> " missing from map") $ locations var)
+  location <-
+    gets
+      ( \s ->
+          Maybe.fromMaybe
+            (error $ "virtual " <> show var <> " missing from map")
+            (HashMap.lookup var s.locations)
+      )
   case location of
     Spilled mem _ -> do
       reg <- allocateRegister dict conflicts
@@ -91,14 +97,9 @@ setPhysical ::
   m ()
 setPhysical var physical = do
   modify
-    ( \s@AllocRegistersState{locations} ->
+    ( \s ->
         s
-          { locations = \var' ->
-              case var == var' of
-                True ->
-                  Just $ NotSpilled physical
-                False ->
-                  locations var'
+          { locations = HashMap.insert var (NotSpilled physical) s.locations
           , varSizes = HashMap.insert var (registerSize physical) s.varSizes
           }
     )
@@ -111,14 +112,9 @@ setSpilled ::
   m ()
 setSpilled var mem size =
   modify
-    ( \s@AllocRegistersState{locations} ->
+    ( \s ->
         s
-          { locations = \var' ->
-              case var == var' of
-                True ->
-                  Just $ Spilled mem size
-                False ->
-                  locations var'
+          { locations = HashMap.insert var (Spilled mem size) s.locations
           , varSizes = HashMap.insert var size s.varSizes
           }
     )
@@ -148,7 +144,7 @@ allocateRegister AllocRegisters{store} conflicts = do
       conflictingRegisters :: [Register isa] <-
         wither
           ( \v -> do
-              mLocation <- gets (\AllocRegistersState{locations} -> locations v)
+              mLocation <- gets (HashMap.lookup v . (.locations))
               case mLocation of
                 Nothing ->
                   pure Nothing
@@ -230,7 +226,7 @@ freeVar ::
   SSA.Var ->
   m ()
 freeVar var = do
-  mLocation <- gets (\AllocRegistersState{locations} -> locations var)
+  mLocation <- gets (HashMap.lookup var . (.locations))
   case mLocation of
     Nothing ->
       error $ "var " <> show var <> " missing from locations map"

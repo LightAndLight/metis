@@ -122,7 +122,7 @@ spec =
           flip
             evalState
             AllocRegistersState
-              { locations = const Nothing
+              { locations = mempty
               , varSizes = mempty
               , freeRegisters = generalPurposeRegisters @MockIsa
               , occupiedRegisters = mempty
@@ -169,7 +169,7 @@ spec =
           flip
             evalState
             AllocRegistersState
-              { locations = const Nothing
+              { locations = mempty
               , varSizes = mempty
               , freeRegisters = Seq.fromList [Rax, Rbx]
               , occupiedRegisters = mempty
