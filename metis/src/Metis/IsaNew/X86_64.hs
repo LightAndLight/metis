@@ -133,8 +133,7 @@ instance Hashable (Register X86_64)
 allocRegisters_X86_64 :: AllocRegisters X86_64
 allocRegisters_X86_64 =
   AllocRegisters
-    { traverseVars = traverse
-    , instructionVarInfo
+    { instructionVarInfo
     , load = Mov_rm
     , store = Mov_mr
     }

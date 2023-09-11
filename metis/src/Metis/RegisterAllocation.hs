@@ -258,13 +258,7 @@ freeVar var = do
             )
 
 data AllocRegisters isa = AllocRegisters
-  { traverseVars ::
-      forall m var var'.
-      (Applicative m) =>
-      (var -> m var') ->
-      Instruction isa var ->
-      m (Instruction isa var')
-  , instructionVarInfo :: forall var. (var -> Word64) -> Instruction isa var -> Instruction isa (VarInfo var)
+  { instructionVarInfo :: forall var. (var -> Word64) -> Instruction isa var -> Instruction isa (VarInfo var)
   , load :: forall var. var -> Address var -> Instruction isa var
   , store :: forall var. Address var -> var -> Instruction isa var
   }
@@ -318,9 +312,9 @@ allocRegisters1 ::
   AllocRegisters isa ->
   Instruction isa SSA.Var ->
   m [Instruction isa (Register isa)]
-allocRegisters1 dict@AllocRegisters{traverseVars, instructionVarInfo} inst = do
+allocRegisters1 dict@AllocRegisters{instructionVarInfo} inst = do
   VarSizes f <- varSizesFunction
-  (lastInst, insts) <- runWriterT $ traverseVars (allocRegistersVar dict) $ instructionVarInfo f inst
+  (lastInst, insts) <- runWriterT $ traverse (allocRegistersVar dict) $ instructionVarInfo f inst
   pure . DList.toList $ insts <> DList.singleton lastInst
   where
     varSizesFunction ::

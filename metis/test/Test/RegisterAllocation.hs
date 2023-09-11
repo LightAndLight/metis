@@ -68,8 +68,7 @@ instance Hashable (Register MockIsa)
 allocRegistersMockIsa :: AllocRegisters MockIsa
 allocRegistersMockIsa =
   AllocRegisters
-    { traverseVars = traverse
-    , instructionVarInfo
+    { instructionVarInfo
     , load = Mov_rm
     , store = Mov_mr
     }
