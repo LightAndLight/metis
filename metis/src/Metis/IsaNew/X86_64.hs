@@ -14,7 +14,6 @@ module Metis.IsaNew.X86_64 (
 
 import Data.Hashable (Hashable)
 import qualified Data.Sequence as Seq
-import Data.Word (Word64)
 import GHC.Generics (Generic)
 import Metis.IsaNew (Address (..), Immediate, Isa (..), Symbol)
 import Metis.RegisterAllocation (AllocRegisters (..), Usage (..), VarInfo {- VarType (..) -} (..))
@@ -140,10 +139,9 @@ allocRegisters_X86_64 =
   where
     instructionVarInfo ::
       forall var.
-      (var -> Word64) ->
       Instruction X86_64 var ->
       Instruction X86_64 (VarInfo var)
-    instructionVarInfo _varSize inst =
+    instructionVarInfo inst =
       case inst of
         Push_r a ->
           Push_r (VarInfo (Use []) a)

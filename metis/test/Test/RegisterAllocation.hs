@@ -14,7 +14,6 @@ import qualified Data.HashMap.Strict as HashMap
 import qualified Data.HashSet as HashSet
 import Data.Hashable (Hashable)
 import qualified Data.Sequence as Seq
-import Data.Word (Word64)
 import GHC.Generics (Generic)
 import Metis.IsaNew (
   Address (..),
@@ -74,10 +73,9 @@ allocRegistersMockIsa =
     }
   where
     instructionVarInfo ::
-      (var -> Word64) ->
       Instruction MockIsa var ->
       Instruction MockIsa (VarInfo var)
-    instructionVarInfo _varSize inst =
+    instructionVarInfo inst =
       case inst of
         Mov_ri dest imm ->
           Mov_ri

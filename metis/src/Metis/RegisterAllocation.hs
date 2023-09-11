@@ -258,7 +258,7 @@ freeVar var = do
             )
 
 data AllocRegisters isa = AllocRegisters
-  { instructionVarInfo :: forall var. (var -> Word64) -> Instruction isa var -> Instruction isa (VarInfo var)
+  { instructionVarInfo :: forall var. Instruction isa var -> Instruction isa (VarInfo var)
   , load :: forall var. var -> Address var -> Instruction isa var
   , store :: forall var. Address var -> var -> Instruction isa var
   }
@@ -302,8 +302,6 @@ allocRegistersVar dict (VarInfo info var) =
 
       pure src'
 
-newtype VarSizes = VarSizes (SSA.Var -> Word64)
-
 allocRegisters1 ::
   ( Isa isa
   , MonadReader AllocRegistersEnv m
@@ -313,23 +311,8 @@ allocRegisters1 ::
   Instruction isa SSA.Var ->
   m [Instruction isa (Register isa)]
 allocRegisters1 dict@AllocRegisters{instructionVarInfo} inst = do
-  VarSizes f <- varSizesFunction
-  (lastInst, insts) <- runWriterT $ traverse (allocRegistersVar dict) $ instructionVarInfo f inst
+  (lastInst, insts) <- runWriterT $ traverse (allocRegistersVar dict) $ instructionVarInfo inst
   pure . DList.toList $ insts <> DList.singleton lastInst
-  where
-    varSizesFunction ::
-      (MonadReader AllocRegistersEnv m, MonadState (AllocRegistersState isa) m) =>
-      m VarSizes
-    varSizesFunction =
-      gets
-        ( \s ->
-            VarSizes
-              ( \var ->
-                  Maybe.fromMaybe
-                    (error $ "var " <> show var <> " not in sizes map")
-                    (HashMap.lookup var s.varSizes)
-              )
-        )
 
 allocRegisters ::
   ( Isa isa
