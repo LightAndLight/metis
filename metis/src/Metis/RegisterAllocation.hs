@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ImpredicativeTypes #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE QuantifiedConstraints #-}
@@ -22,6 +23,8 @@ module Metis.RegisterAllocation (
   allocRegisters,
 ) where
 
+import Control.Lens.Cons (uncons)
+import Control.Monad ((<=<))
 import Control.Monad.Reader.Class (MonadReader, asks)
 import Control.Monad.State.Class (MonadState, gets, modify)
 import Control.Monad.Trans.Writer.CPS (runWriterT)
@@ -39,6 +42,7 @@ import qualified Data.Maybe as Maybe
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import Data.Word (Word64)
+import qualified Metis.InstSelectionNew as InstSelection
 import Metis.IsaNew (Address (..), AddressBase (..), Isa (..))
 import qualified Metis.SSA.Var as SSA
 import Witherable (wither)
@@ -70,7 +74,7 @@ getRegister ::
   ) =>
   AllocRegisters isa ->
   SSA.Var ->
-  [SSA.Var] ->
+  [InstSelection.Var isa] ->
   m (Register isa)
 getRegister dict@AllocRegisters{load} var conflicts = do
   location <-
@@ -82,7 +86,7 @@ getRegister dict@AllocRegisters{load} var conflicts = do
       )
   case location of
     Spilled mem _ -> do
-      reg <- allocateRegister dict conflicts
+      reg <- allocateRegister dict uncons conflicts
       assignRegister var reg
       tell . DList.singleton $ load reg mem
       pure reg
@@ -133,24 +137,28 @@ allocateRegister ::
   , MonadWriter (DList (Instruction isa (Register isa))) m
   ) =>
   AllocRegisters isa ->
-  [SSA.Var] ->
+  (Seq (Register isa) -> Maybe (Register isa, Seq (Register isa))) ->
+  [InstSelection.Var isa] ->
   m (Register isa)
-allocateRegister AllocRegisters{store} conflicts = do
+allocateRegister AllocRegisters{store} get conflicts = do
   freeRegisters <- gets (.freeRegisters)
-  case Seq.viewl freeRegisters of
-    Seq.EmptyL -> do
+  case get freeRegisters of
+    Nothing -> do
       occupiedRegisters <- gets (.occupiedRegisters)
       conflictingRegisters :: [Register isa] <-
         wither
-          ( \v -> do
-              mLocation <- gets (HashMap.lookup v . (.locations))
-              case mLocation of
-                Nothing ->
-                  pure Nothing
-                Just Spilled{} ->
-                  pure Nothing
-                Just (NotSpilled reg) ->
-                  pure $ Just reg
+          ( \case
+              InstSelection.Physical _ reg ->
+                pure $ Just reg
+              InstSelection.Virtual virtual -> do
+                mLocation <- gets (HashMap.lookup virtual . (.locations))
+                case mLocation of
+                  Nothing ->
+                    pure Nothing
+                  Just Spilled{} ->
+                    pure Nothing
+                  Just (NotSpilled reg) ->
+                    pure $ Just reg
           )
           conflicts
       case filter (\(r, _v) -> r `notElem` conflictingRegisters) $ HashMap.toList occupiedRegisters of
@@ -164,7 +172,7 @@ allocateRegister AllocRegisters{store} conflicts = do
 
           tell . DList.singleton $ store mem reg
           pure reg
-    reg Seq.:< freeRegisters' -> do
+    Just (reg, freeRegisters') -> do
       modify (\s -> s{freeRegisters = freeRegisters'})
       pure reg
 
@@ -274,27 +282,55 @@ allocRegistersVar ::
   , MonadWriter (DList (Instruction isa (Register isa))) m
   ) =>
   AllocRegisters isa ->
-  VarInfo SSA.Var ->
+  VarInfo (InstSelection.Var isa) ->
   m (Register isa)
 allocRegistersVar dict (VarInfo info var) =
-  case info of
-    Use conflicts ->
-      getRegister dict var conflicts
-    DefNew -> do
-      freeVars =<< getKilledBy var
-
-      dest <- allocateRegister dict []
-      assignRegister var dest
+  case var of
+    InstSelection.Physical mVirtual physical -> do
+      for_ mVirtual $ freeVars <=< getKilledBy
+      dest <-
+        allocateRegister
+          dict
+          ( \available -> do
+              index <- Seq.findIndexL (== physical) available
+              let (prefix, suffix) = Seq.splitAt index available
+              case Seq.viewl suffix of
+                Seq.EmptyL ->
+                  Nothing
+                register Seq.:< registers ->
+                  Just (register, prefix <> registers)
+          )
+          []
+      for_ mVirtual $ \virtual -> assignRegister virtual dest
       pure dest
-    DefReuse src -> do
-      src' <- getRegister dict src []
+    InstSelection.Virtual virtual ->
+      case info of
+        Use conflicts ->
+          getRegister dict virtual conflicts
+        DefNew -> do
+          freeVars =<< getKilledBy virtual
 
-      killedByDest <- getKilledBy var
-      freeVars (HashSet.delete src killedByDest)
+          dest <- allocateRegister dict uncons []
+          assignRegister virtual dest
+          pure dest
+        DefReuse src -> do
+          reg <-
+            case src of
+              InstSelection.Physical mVar srcPhysical -> do
+                killedByDest <- getKilledBy virtual
+                freeVars $ maybe id HashSet.delete mVar killedByDest
 
-      assignRegister var src'
+                pure srcPhysical
+              InstSelection.Virtual srcVirtual -> do
+                src' <- getRegister dict srcVirtual []
 
-      pure src'
+                killedByDest <- getKilledBy virtual
+                freeVars (HashSet.delete srcVirtual killedByDest)
+
+                pure src'
+
+          assignRegister virtual reg
+          pure reg
 
 allocRegisters1 ::
   ( Isa isa
@@ -302,7 +338,7 @@ allocRegisters1 ::
   , MonadState (AllocRegistersState isa) m
   ) =>
   AllocRegisters isa ->
-  Instruction isa SSA.Var ->
+  Instruction isa (InstSelection.Var isa) ->
   m [Instruction isa (Register isa)]
 allocRegisters1 dict@AllocRegisters{instructionVarInfo} inst = do
   (lastInst, insts) <- runWriterT $ traverse (allocRegistersVar dict) $ instructionVarInfo inst
@@ -314,7 +350,7 @@ allocRegisters ::
   , MonadState (AllocRegistersState isa) m
   ) =>
   AllocRegisters isa ->
-  [Instruction isa SSA.Var] ->
+  [Instruction isa (InstSelection.Var isa)] ->
   m [Instruction isa (Register isa)]
 allocRegisters dict =
   fmap concat . traverse (allocRegisters1 dict)

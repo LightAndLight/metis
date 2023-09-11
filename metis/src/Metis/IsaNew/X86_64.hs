@@ -1,8 +1,11 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE QuantifiedConstraints #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 
 module Metis.IsaNew.X86_64 (
@@ -10,13 +13,24 @@ module Metis.IsaNew.X86_64 (
   Instruction (..),
   Register (..),
   allocRegisters_X86_64,
+  instSelection_X86_64,
 ) where
 
+import Control.Monad.State.Class (MonadState)
+import Control.Monad.Writer.Class (MonadWriter, tell)
+import Data.DList (DList)
 import Data.Hashable (Hashable)
 import qualified Data.Sequence as Seq
 import GHC.Generics (Generic)
-import Metis.IsaNew (Address (..), Immediate, Isa (..), Symbol)
-import Metis.RegisterAllocation (AllocRegisters (..), Usage (..), VarInfo {- VarType (..) -} (..))
+import Metis.InstSelectionNew (InstSelState, Value (..), Var (..))
+import qualified Metis.InstSelectionNew as InstSelection
+import Metis.IsaNew (Address (..), Immediate (..), Instruction, Isa (..), Register, Symbol (..), addOffset, framePointerRegister)
+import Metis.RegisterAllocation (AllocRegisters (..), Usage (..), VarInfo (..))
+import Metis.SSA (Simple)
+import qualified Metis.SSA as SSA
+import Metis.SSA.Var (MonadVar, freshVar)
+import qualified Metis.SSA.Var as SSA (Var)
+import qualified Metis.Type as Type
 
 data X86_64
 
@@ -193,3 +207,90 @@ allocRegisters_X86_64 =
           Sub_ri (VarInfo (DefReuse b) a) (VarInfo (Use []) b) c
         Sub_rr a b c ->
           Sub_rr (VarInfo (DefReuse b) a) (VarInfo (Use [c]) b) (VarInfo (Use [b]) c)
+
+instSelection_X86_64 ::
+  ( MonadVar m
+  , MonadState InstSelState m
+  , MonadWriter (DList (Instruction X86_64 (InstSelection.Var X86_64))) m
+  ) =>
+  SSA.Instruction ->
+  m SSA.Var
+instSelection_X86_64 inst =
+  case inst of
+    SSA.LetS var _ty value -> do
+      case value of
+        SSA.Var src ->
+          tell [Mov_rr (Virtual var) (Virtual src)]
+        SSA.Name name ->
+          tell [Lea_rs (Virtual var) (Symbol name)]
+        SSA.Literal lit ->
+          tell [Mov_ri (Virtual var) (InstSelection.literalToImmediate lit)]
+        SSA.Type{} ->
+          error "TODO: instSelection/LetS/Type"
+      pure var
+    SSA.LetC var _ty operation -> do
+      case operation of
+        SSA.Binop op a b -> do
+          a' <- simpleToVar a
+          case (op, InstSelection.simpleToValue b) of
+            (SSA.Add, b') ->
+              case b' of
+                ValueImmediate b'' ->
+                  tell [Add_ri (Virtual var) (Virtual a') b'']
+                ValueVar b'' ->
+                  tell [Add_rr (Virtual var) (Virtual a') b'']
+            (SSA.Subtract, b') ->
+              case b' of
+                ValueImmediate b'' ->
+                  tell [Sub_ri (Virtual var) (Virtual a') b'']
+                ValueVar b'' ->
+                  tell [Sub_rr (Virtual var) (Virtual a') b'']
+        SSA.Call f xs -> do
+          _ <- error "TODO: instSelection/LetC/CAll" xs
+          case f of
+            SSA.Var src ->
+              tell [Call_r (Virtual src)]
+            SSA.Name name ->
+              tell [Call_s (Symbol name)]
+            SSA.Literal lit ->
+              error $ "can't call literal: " <> show lit
+            SSA.Type t ->
+              error $ "can't call type: " <> show t
+        SSA.Alloca t -> do
+          addr <- InstSelection.allocLocal @X86_64 $ Type.sizeOf t
+          tell [Lea_rm (Virtual var) addr]
+        SSA.Store ptr value -> do
+          let ptr' = InstSelection.simpleToAddress ptr
+          case InstSelection.simpleToValue value of
+            ValueImmediate i ->
+              tell [Mov_mi ptr' i]
+            ValueVar v ->
+              tell [Mov_mr ptr' v]
+        SSA.Load ptr -> do
+          let ptr' = InstSelection.simpleToAddress ptr
+          tell [Mov_rm (Virtual var) ptr']
+        SSA.GetTypeDictField ptr field -> do
+          let ptr' = InstSelection.simpleToAddress ptr
+          tell [Mov_rm (Virtual var) (ptr' `addOffset` SSA.typeDictFieldOffset field)]
+      pure var
+
+simpleToVar ::
+  ( MonadVar m
+  , MonadWriter (DList (Instruction X86_64 (InstSelection.Var X86_64))) m
+  ) =>
+  Simple ->
+  m SSA.Var
+simpleToVar simple =
+  case simple of
+    SSA.Var var ->
+      pure var
+    SSA.Name name -> do
+      var <- freshVar
+      tell [Lea_rs (Virtual var) (Symbol name)]
+      pure var
+    SSA.Literal lit -> do
+      var <- freshVar
+      tell [Mov_ri (Virtual var) (InstSelection.literalToImmediate lit)]
+      pure var
+    SSA.Type _ty ->
+      error "TODO: simpleToVar/Type"

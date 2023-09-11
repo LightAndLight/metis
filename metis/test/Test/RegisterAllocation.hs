@@ -15,6 +15,7 @@ import qualified Data.HashSet as HashSet
 import Data.Hashable (Hashable)
 import qualified Data.Sequence as Seq
 import GHC.Generics (Generic)
+import Metis.InstSelectionNew (Var (..))
 import Metis.IsaNew (
   Address (..),
   AddressBase (..),
@@ -109,13 +110,13 @@ spec =
   describe "Test.RegisterAllocation" $ do
     it "1" $ do
       let input =
-            [ Mov_ri (SSA.unsafeVar 0) (Word64 1)
-            , Mov_ri (SSA.unsafeVar 1) (Word64 2)
-            , Add_rr (SSA.unsafeVar 2) (SSA.unsafeVar 0) (SSA.unsafeVar 1)
-            , Mov_ri (SSA.unsafeVar 3) (Word64 3)
-            , Mov_ri (SSA.unsafeVar 4) (Word64 4)
-            , Add_rr (SSA.unsafeVar 5) (SSA.unsafeVar 3) (SSA.unsafeVar 4)
-            , Add_rr (SSA.unsafeVar 6) (SSA.unsafeVar 2) (SSA.unsafeVar 5)
+            [ Mov_ri (Virtual $ SSA.unsafeVar 0) (Word64 1)
+            , Mov_ri (Virtual $ SSA.unsafeVar 1) (Word64 2)
+            , Add_rr (Virtual $ SSA.unsafeVar 2) (Virtual $ SSA.unsafeVar 0) (Virtual $ SSA.unsafeVar 1)
+            , Mov_ri (Virtual $ SSA.unsafeVar 3) (Word64 3)
+            , Mov_ri (Virtual $ SSA.unsafeVar 4) (Word64 4)
+            , Add_rr (Virtual $ SSA.unsafeVar 5) (Virtual $ SSA.unsafeVar 3) (Virtual $ SSA.unsafeVar 4)
+            , Add_rr (Virtual $ SSA.unsafeVar 6) (Virtual $ SSA.unsafeVar 2) (Virtual $ SSA.unsafeVar 5)
             ]
       let
         result =
@@ -156,13 +157,13 @@ spec =
 
     it "2" $ do
       let input =
-            [ Mov_ri (SSA.unsafeVar 0) (Word64 1)
-            , Mov_ri (SSA.unsafeVar 1) (Word64 2)
-            , Add_rr (SSA.unsafeVar 2) (SSA.unsafeVar 0) (SSA.unsafeVar 1)
-            , Mov_ri (SSA.unsafeVar 3) (Word64 3)
-            , Mov_ri (SSA.unsafeVar 4) (Word64 4)
-            , Add_rr (SSA.unsafeVar 5) (SSA.unsafeVar 3) (SSA.unsafeVar 4)
-            , Add_rr (SSA.unsafeVar 6) (SSA.unsafeVar 2) (SSA.unsafeVar 5)
+            [ Mov_ri (Virtual $ SSA.unsafeVar 0) (Word64 1)
+            , Mov_ri (Virtual $ SSA.unsafeVar 1) (Word64 2)
+            , Add_rr (Virtual $ SSA.unsafeVar 2) (Virtual $ SSA.unsafeVar 0) (Virtual $ SSA.unsafeVar 1)
+            , Mov_ri (Virtual $ SSA.unsafeVar 3) (Word64 3)
+            , Mov_ri (Virtual $ SSA.unsafeVar 4) (Word64 4)
+            , Add_rr (Virtual $ SSA.unsafeVar 5) (Virtual $ SSA.unsafeVar 3) (Virtual $ SSA.unsafeVar 4)
+            , Add_rr (Virtual $ SSA.unsafeVar 6) (Virtual $ SSA.unsafeVar 2) (Virtual $ SSA.unsafeVar 5)
             ]
       let
         result =
