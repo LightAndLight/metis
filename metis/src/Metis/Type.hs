@@ -2,11 +2,13 @@
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-overlapping-patterns #-}
 
 module Metis.Type (
   Type (..),
   forall_,
+  instantiateMany,
   sizeOf,
   pointerSize,
   CallingConvention (..),
@@ -15,7 +17,7 @@ module Metis.Type (
 ) where
 
 import Bound.Class ((>>>=))
-import Bound.Scope.Simple (Scope, toScope)
+import Bound.Scope.Simple (Scope, instantiate, toScope)
 import Bound.Var (Var (..))
 import qualified Control.Monad
 import Data.Deriving (deriveEq1, deriveShow1)
@@ -114,3 +116,19 @@ forall_ tyVars body =
         Nothing -> error $ "type variable found in " <> show body
         Just body' -> body'
     _ -> Forall tyVars . toScope $ fmap B body
+
+instantiateMany :: Type a -> [Type a] -> Type a
+instantiateMany target args =
+  case target of
+    Forall tyVars body ->
+      let tyVarCount = length tyVars
+          (prefix, args') = splitAt tyVarCount args
+       in instantiateMany (instantiate (\index -> prefix !! fromIntegral @Word64 @Int index) body) args'
+    _ ->
+      case args of
+        [] -> target
+        _ ->
+          error $
+            "instantiateMany called with "
+              <> show (length args)
+              <> " type argument(s) too many"
