@@ -9,7 +9,6 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
 
@@ -268,12 +267,11 @@ data Usage var
   | DefNew
 
 allocRegistersVar ::
-  forall isa m a.
+  forall isa m.
   ( Isa isa
   , MonadReader AllocRegistersEnv m
   , MonadState (AllocRegistersState isa) m
   , MonadWriter (DList (Instruction isa (Register isa))) m
-  , a ~ Register isa
   ) =>
   AllocRegisters isa ->
   VarInfo SSA.Var ->
