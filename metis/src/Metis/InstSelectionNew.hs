@@ -8,6 +8,7 @@
 
 module Metis.InstSelectionNew (
   InstSelState (..),
+  Var (..),
   instSelection_X86_64,
 ) where
 
@@ -15,7 +16,6 @@ import Control.Monad.State.Class (MonadState, gets, modify)
 import Control.Monad.Writer.Class (MonadWriter, tell)
 import Data.DList (DList)
 import Data.Int (Int64)
-import Data.Kind (Type)
 import Data.Word (Word64)
 import Metis.IsaNew (Address (..), AddressBase (..), Immediate (..), Instruction, Isa, Register, Symbol (..), addOffset, framePointerRegister)
 import Metis.IsaNew.X86_64 (Instruction (..), X86_64)
@@ -29,25 +29,25 @@ import qualified Metis.Type as Type
 
 data InstSelState = InstSelState {stackFrameTop :: Int64}
 
-data VarOrRegister :: Type -> Type where
-  VVar :: SSA.Var -> VarOrRegister isa
-  RRegister :: Register isa -> VarOrRegister isa
+data Var isa
+  = Virtual SSA.Var
+  | Physical (Register isa)
 
-allocLocal :: forall isa m. (Isa isa, MonadState InstSelState m) => Word64 -> m (Address (VarOrRegister isa))
+allocLocal :: forall isa m. (Isa isa, MonadState InstSelState m) => Word64 -> m (Address (Var isa))
 allocLocal size = do
   stackFrameTop <- gets (.stackFrameTop)
   let nextStackFrameTop = stackFrameTop - fromIntegral @Word64 @Int64 size
   modify (\s -> s{stackFrameTop = nextStackFrameTop})
-  pure Address{base = BaseVar . RRegister $ framePointerRegister @isa, offset = nextStackFrameTop}
+  pure Address{base = BaseVar . Physical $ framePointerRegister @isa, offset = nextStackFrameTop}
 
 data Value isa
-  = Immediate Immediate
-  | Var SSA.Var
+  = ValueImmediate Immediate
+  | ValueVar (Var isa)
 
 instSelection_X86_64 ::
   ( MonadVar m
   , MonadState InstSelState m
-  , MonadWriter (DList (Instruction X86_64 (VarOrRegister X86_64))) m
+  , MonadWriter (DList (Instruction X86_64 (Var X86_64))) m
   ) =>
   SSA.Instruction ->
   m SSA.Var
@@ -56,11 +56,11 @@ instSelection_X86_64 inst =
     SSA.LetS var _ty value -> do
       case value of
         SSA.Var src ->
-          tell [Mov_rr (VVar var) (VVar src)]
+          tell [Mov_rr (Virtual var) (Virtual src)]
         SSA.Name name ->
-          tell [Lea_rs (VVar var) (Symbol name)]
+          tell [Lea_rs (Virtual var) (Symbol name)]
         SSA.Literal lit ->
-          tell [Mov_ri (VVar var) (literalToImmediate lit)]
+          tell [Mov_ri (Virtual var) (literalToImmediate lit)]
         SSA.Type{} ->
           error "TODO: instSelection/LetS/Type"
       pure var
@@ -71,21 +71,21 @@ instSelection_X86_64 inst =
           case (op, simpleToValue b) of
             (SSA.Add, b') ->
               case b' of
-                Immediate b'' ->
-                  tell [Add_ri (VVar var) (VVar a') b'']
-                Var b'' ->
-                  tell [Add_rr (VVar var) (VVar a') (VVar b'')]
+                ValueImmediate b'' ->
+                  tell [Add_ri (Virtual var) (Virtual a') b'']
+                ValueVar b'' ->
+                  tell [Add_rr (Virtual var) (Virtual a') b'']
             (SSA.Subtract, b') ->
               case b' of
-                Immediate b'' ->
-                  tell [Sub_ri (VVar var) (VVar a') b'']
-                Var b'' ->
-                  tell [Sub_rr (VVar var) (VVar a') (VVar b'')]
+                ValueImmediate b'' ->
+                  tell [Sub_ri (Virtual var) (Virtual a') b'']
+                ValueVar b'' ->
+                  tell [Sub_rr (Virtual var) (Virtual a') b'']
         SSA.Call f xs -> do
           _ <- error "TODO: instSelection/LetC/CAll" xs
           case f of
             SSA.Var src ->
-              tell [Call_r (VVar src)]
+              tell [Call_r (Virtual src)]
             SSA.Name name ->
               tell [Call_s (Symbol name)]
             SSA.Literal lit ->
@@ -94,20 +94,20 @@ instSelection_X86_64 inst =
               error $ "can't call type: " <> show t
         SSA.Alloca t -> do
           addr <- allocLocal @X86_64 $ Type.sizeOf t
-          tell [Lea_rm (VVar var) addr]
+          tell [Lea_rm (Virtual var) addr]
         SSA.Store ptr value -> do
           let ptr' = simpleToAddress ptr
           case simpleToValue value of
-            Immediate i ->
+            ValueImmediate i ->
               tell [Mov_mi ptr' i]
-            Var v ->
-              tell [Mov_mr ptr' (VVar v)]
+            ValueVar v ->
+              tell [Mov_mr ptr' v]
         SSA.Load ptr -> do
           let ptr' = simpleToAddress ptr
-          tell [Mov_rm (VVar var) ptr']
+          tell [Mov_rm (Virtual var) ptr']
         SSA.GetTypeDictField ptr field -> do
           let ptr' = simpleToAddress ptr
-          tell [Mov_rm (VVar var) (ptr' `addOffset` SSA.typeDictFieldOffset field)]
+          tell [Mov_rm (Virtual var) (ptr' `addOffset` SSA.typeDictFieldOffset field)]
       pure var
 
 literalToImmediate :: Literal -> Immediate
@@ -120,17 +120,17 @@ simpleToValue :: Simple -> Value isa
 simpleToValue simple =
   case simple of
     SSA.Var var ->
-      Var var
+      ValueVar $ Virtual var
     SSA.Name name ->
-      Immediate . Label $ Symbol name
+      ValueImmediate . Label $ Symbol name
     SSA.Literal lit ->
-      Immediate $ literalToImmediate lit
+      ValueImmediate $ literalToImmediate lit
     SSA.Type _ty ->
       error "TODO: simpleToValue/Type"
 
 simpleToVar ::
   ( MonadVar m
-  , MonadWriter (DList (Instruction X86_64 (VarOrRegister X86_64))) m
+  , MonadWriter (DList (Instruction X86_64 (Var X86_64))) m
   ) =>
   Simple ->
   m SSA.Var
@@ -140,20 +140,20 @@ simpleToVar simple =
       pure var
     SSA.Name name -> do
       var <- freshVar
-      tell [Lea_rs (VVar var) (Symbol name)]
+      tell [Lea_rs (Virtual var) (Symbol name)]
       pure var
     SSA.Literal lit -> do
       var <- freshVar
-      tell [Mov_ri (VVar var) (literalToImmediate lit)]
+      tell [Mov_ri (Virtual var) (literalToImmediate lit)]
       pure var
     SSA.Type _ty ->
       error "TODO: simpleToVar/Type"
 
-simpleToAddress :: Simple -> Address (VarOrRegister isa)
+simpleToAddress :: Simple -> Address (Var isa)
 simpleToAddress simple =
   case simple of
     SSA.Var src ->
-      Address{base = BaseVar (VVar src), offset = 0}
+      Address{base = BaseVar (Virtual src), offset = 0}
     SSA.Name name ->
       Address{base = BaseLabel $ Symbol name, offset = 0}
     SSA.Literal lit ->
