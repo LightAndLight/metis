@@ -341,7 +341,13 @@ allocRegisters1 ::
   Instruction isa (InstSelection.Var isa) ->
   m [Instruction isa (Register isa)]
 allocRegisters1 dict@AllocRegisters{instructionVarInfo} inst = do
-  (lastInst, insts) <- runWriterT $ traverse (allocRegistersVar dict) $ instructionVarInfo inst
+  (lastInst, insts) <-
+    runWriterT
+      -- Is it okay to traverse "defs" before "uses"?
+      -- When writing instructions in Intel style, the destination goes before the sources. This
+      -- means it's traversed before the sources.
+      . traverse (allocRegistersVar dict)
+      $ instructionVarInfo inst
   pure . DList.toList $ insts <> DList.singleton lastInst
 
 allocRegisters ::
