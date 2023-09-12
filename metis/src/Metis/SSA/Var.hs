@@ -13,6 +13,8 @@ module Metis.SSA.Var (
   runVarT,
 ) where
 
+import Control.Monad.Fix (MonadFix)
+import qualified Control.Monad.Reader
 import Control.Monad.State.Strict (StateT, evalStateT, get, put)
 import Control.Monad.Trans.Class (MonadTrans, lift)
 import Data.Hashable (Hashable (..))
@@ -29,8 +31,11 @@ class (Monad m) => MonadVar m where
   default freshVar :: (m ~ t n, MonadTrans t, MonadVar n) => m Var
   freshVar = lift freshVar
 
+instance (MonadVar m) => MonadVar (Control.Monad.Reader.ReaderT r m)
+instance (MonadVar m) => MonadVar (Control.Monad.State.Strict.StateT s m)
+
 newtype VarT m a = VarT (StateT Word64 m a)
-  deriving (Functor, Applicative, Monad, MonadTrans)
+  deriving (Functor, Applicative, Monad, MonadTrans, MonadFix)
 
 runVarT :: (Monad m) => VarT m a -> m a
 runVarT (VarT ma) = evalStateT ma 0
