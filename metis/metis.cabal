@@ -93,6 +93,7 @@ test-suite metis-test
         Test.CoreToAsm
         Test.Liveness
         Test.RegisterAllocation
+        Test.SSA
         Test.SimplifyAsm
     -- other-extensions:
     type:             exitcode-stdio-1.0
@@ -103,6 +104,7 @@ test-suite metis-test
         bound,
         containers,
         directory,
+        dlist,
         filepath,
         foldable-buildable,
         hashable,
