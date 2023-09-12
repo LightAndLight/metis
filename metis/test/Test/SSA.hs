@@ -13,10 +13,10 @@ import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 import Data.Text (Text)
 import Data.Void (Void, absurd)
-import Metis.Core (Expr (..))
+import Metis.Core (Expr (..), Function (..))
 import qualified Metis.Kind as Kind
 import qualified Metis.Literal as Literal
-import Metis.SSA (CallTypeInfo (..), calledFunctionType)
+import Metis.SSA (InstantiateTypeInfo (..), Polymorphism (..), instantiateType)
 import qualified Metis.SSA as SSA
 import Metis.SSA.Var (runVarT)
 import qualified Metis.SSA.Var as SSA (unsafeVar)
@@ -270,11 +270,10 @@ spec =
           )
           `ssaShouldBe` ssa
 
-    {-
-    describe "fromFunction" $ do
+    describe "fromCoreFunction" $ do
       let
         ssaShouldBe :: (HasCallStack) => Function -> SSA.Function -> IO ()
-        ssaShouldBe function expectation = SSA.fromFunction (const undefined) function `shouldBe` expectation
+        ssaShouldBe function expectation = SSA.fromCoreFunction (const undefined) function `shouldBe` expectation
 
       it "id @(a : Type) (x : a) : a = x" $ do
         Function
@@ -292,49 +291,45 @@ spec =
                 , (SSA.unsafeVar 2, Type.Ptr $ Type.Var (SSA.unsafeVar 0))
                 ]
             , retTy = Type.Ptr $ Type.Var (SSA.unsafeVar 0)
-            , body =
+            , blocks =
                 {-
                 %0 : *Type
                 %1 : *%0
                 %2 : *%0
                 ---
-                %3 : (*Type = %0, *%0) -> *%0 = %0.move
+                %3 : (*Type = %0, *%0, *%0) -> *%0 = %0.move
                 %4 : *%0 = %3(%0, %1, %2)
                 ret %4
                 -}
-                SSA.LetC
-                  (SSA.unsafeVar 3)
-                  (Type.Fn [Type.Ptr Type.Unknown, Type.Ptr $ Type.Var (SSA.unsafeVar 0), Type.Ptr $ Type.Var (SSA.unsafeVar 0)] (Type.Ptr $ Type.Var (SSA.unsafeVar 0)))
-                  (SSA.GetTypeDictField (SSA.Var $ SSA.unsafeVar 0) SSA.TypeDictMove)
-                  $ SSA.LetC
-                    (SSA.unsafeVar 4)
-                    (Type.Ptr $ Type.Var (SSA.unsafeVar 0))
-                    ( SSA.Call
-                        (SSA.Var $ SSA.unsafeVar 3)
-                        [SSA.Var $ SSA.unsafeVar 0, SSA.Var $ SSA.unsafeVar 1, SSA.Var $ SSA.unsafeVar 2]
-                    )
-                  $ SSA.Return (SSA.Var $ SSA.unsafeVar 4)
-            , bodyInfo =
-                SSA.ExprInfo
-                  { labelArgs = []
-                  , varKinds = [(SSA.unsafeVar 0, Kind.Type)]
-                  , varTys =
-                      [ (SSA.unsafeVar 1, Type.Ptr $ Type.Var (SSA.unsafeVar 0))
-                      , (SSA.unsafeVar 2, Type.Ptr $ Type.Var (SSA.unsafeVar 0))
-                      ,
-                        ( SSA.unsafeVar 3
-                        , Type.Fn
-                            [Type.Ptr Type.Unknown, Type.Ptr $ Type.Var (SSA.unsafeVar 0), Type.Ptr $ Type.Var (SSA.unsafeVar 0)]
-                            (Type.Ptr $ Type.Var (SSA.unsafeVar 0))
-                        )
-                      , (SSA.unsafeVar 4, Type.Ptr $ Type.Var (SSA.unsafeVar 0))
-                      ]
-                  }
+                let moveTy =
+                      Type.Fn
+                        [ Type.Ptr Type.Unknown
+                        , Type.Ptr $ Type.Var (SSA.unsafeVar 0)
+                        , Type.Ptr $ Type.Var (SSA.unsafeVar 0)
+                        ]
+                        (Type.Ptr $ Type.Var (SSA.unsafeVar 0))
+                 in [ SSA.Block
+                        { name = "start"
+                        , params = []
+                        , instructions =
+                            [ SSA.LetC (SSA.unsafeVar 3) moveTy (SSA.GetTypeDictField (SSA.Var $ SSA.unsafeVar 0) SSA.TypeDictMove)
+                            , SSA.LetC
+                                (SSA.unsafeVar 4)
+                                (Type.Ptr $ Type.Var (SSA.unsafeVar 0))
+                                ( SSA.Call
+                                    (SSA.Var $ SSA.unsafeVar 3)
+                                    [SSA.unsafeVar 0, SSA.unsafeVar 1, SSA.unsafeVar 2]
+                                )
+                            ]
+                        , terminator =
+                            SSA.Return (SSA.Var $ SSA.unsafeVar 4)
+                        }
+                    ]
             }
-    -}
+
     describe "calledTypeInfo" $ do
       it "forall a. a -> a @ Uint64" $ do
-        calledFunctionType absurd (Type.forall_ [("a", Kind.Type)] (Type.Fn [Type.Var 0] (Type.Var 0))) [Type.Uint64]
-          `shouldBe` ( [CallTypeInfo{type_ = Type.Uint64, byReference = True}]
-                     , CallTypeInfo{type_ = Type.Uint64, byReference = True}
+        instantiateType absurd (Type.forall_ [("a", Kind.Type)] (Type.Fn [Type.Var 0] (Type.Var 0))) [Type.Uint64]
+          `shouldBe` ( [InstantiateTypeInfo{type_ = Type.Uint64, polymorphism = Poly{wasMonomorphised = True}}]
+                     , InstantiateTypeInfo{type_ = Type.Uint64, polymorphism = Poly{wasMonomorphised = True}}
                      )

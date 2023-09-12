@@ -16,26 +16,32 @@ module Metis.SSA (
   Terminator (..),
   Label (..),
   Block (..),
+  Function (..),
   FromCoreEnv (..),
   FromCoreState (..),
   initialFromCoreState,
   fromCoreExpr,
   fromCoreType,
+  fromCoreFunction,
 
   -- * Internals
-  CallTypeInfo (..),
-  calledFunctionType,
+  InstantiateTypeInfo (..),
+  Polymorphism (..),
+  instantiateType,
 ) where
 
 import Bound.Scope.Simple (fromScope)
 import Bound.Var (unvar)
 import Control.Monad (when)
 import Control.Monad.Fix (MonadFix)
+import Control.Monad.Reader (runReaderT)
 import Control.Monad.Reader.Class (MonadReader, asks)
 import Control.Monad.State.Class (MonadState, gets, modify)
+import Control.Monad.State.Strict (evalStateT)
 import Data.DList (DList)
 import qualified Data.DList as DList
 import qualified Data.Either as Either
+import Data.Functor.Identity (runIdentity)
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 import Data.Int (Int64)
@@ -47,7 +53,7 @@ import qualified Metis.Core as Core
 import Metis.Kind (Kind)
 import Metis.Literal (Literal)
 import qualified Metis.Literal as Literal
-import Metis.SSA.Var (MonadVar, Var)
+import Metis.SSA.Var (MonadVar, Var, runVarT)
 import qualified Metis.SSA.Var
 import Metis.Type (Type)
 import qualified Metis.Type as Type
@@ -114,6 +120,14 @@ data Block = Block
   , params :: [Var]
   , instructions :: [Instruction]
   , terminator :: Terminator
+  }
+  deriving (Eq, Show)
+
+data Function = Function
+  { name :: Text
+  , args :: [(Var, Type Var)]
+  , retTy :: Type Var
+  , blocks :: [Block]
   }
   deriving (Eq, Show)
 
@@ -243,7 +257,7 @@ fromCoreExpr tyVar tmVar expr =
         varTypes <- gets (.varTypes)
         pure . Either.fromRight undefined $ typeOf (const $ error "no varKinds") (fmap absurd . nameTypes) (varTypes HashMap.!) f'
 
-      let (argTyInfos, retTyInfo) = calledFunctionType Type.Var fTy ((fmap . fmap) tyVar tyArgs)
+      let (argTyInfos, retTyInfo) = instantiateType Type.Var fTy ((fmap . fmap) tyVar tyArgs)
 
       tyArgs' <- for tyArgs $ \tyArg -> do
         tyArg' <- fromCoreType tyVar tyArg
@@ -269,77 +283,77 @@ fromCoreExpr tyVar tmVar expr =
           _ -> do
             let argTy = argTyInfo.type_
             var <- freshTermVar argTy
-            if argTyInfo.byReference
-              then do
+            case argTyInfo.polymorphism of
+              Poly{wasMonomorphised = True} -> do
                 emit $ LetC var (Type.Ptr argTy) (Alloca argTy)
                 var' <- freshTermVar Type.Unit
                 emit $ LetC var' Type.Unit (Store (Var var) arg')
-              else emit $ LetS var argTy arg'
+              _ ->
+                emit $ LetS var argTy arg'
             pure var
 
       let retTy = retTyInfo.type_
-      dest <-
-        if retTyInfo.byReference
-          then do
-            var <- freshTermVar retTy
-            emit $ LetC var (Type.Ptr retTy) (Alloca retTy)
-            pure [var]
-          else pure []
+      case retTyInfo.polymorphism of
+        Poly{wasMonomorphised = True} -> do
+          dest <- freshTermVar retTy
+          emit $ LetC dest (Type.Ptr retTy) (Alloca retTy)
 
-      (var, varTy) <-
-        if retTyInfo.byReference
-          then do
-            let varTy = Type.Ptr retTy
-            var <- freshTermVar varTy
-            pure (var, varTy)
-          else do
-            var <- freshTermVar retTy
-            pure (var, retTy)
-      emit $ LetC var varTy (Call f' $ tyArgs' <> args' <> dest)
+          var <- freshTermVar $ Type.Ptr retTy
+          emit $ LetC var (Type.Ptr retTy) (Call f' $ tyArgs' <> args' <> [dest])
 
-      if retTyInfo.byReference
-        then do
           var' <- freshTermVar retTy
           emit $ LetC var' retTy (Load $ Var var)
-          pure $ Var var'
-        else pure $ Var var
 
-data CallTypeInfo = CallTypeInfo {type_ :: Type Var, byReference :: Bool}
+          pure $ Var var'
+        _ -> do
+          var <- freshTermVar retTy
+          emit $ LetC var retTy (Call f' $ tyArgs' <> args')
+
+          pure $ Var var
+
+data Polymorphism = Mono | Poly {wasMonomorphised :: Bool}
   deriving (Eq, Show)
 
-calledFunctionType ::
+data InstantiateTypeInfo = InstantiateTypeInfo {type_ :: Type Var, polymorphism :: Polymorphism}
+  deriving (Eq, Show)
+
+instantiateType ::
   (a -> Type Var) ->
   Type a ->
   [Type Var] ->
-  ([CallTypeInfo], CallTypeInfo)
-calledFunctionType f ty tyArgs =
+  ([InstantiateTypeInfo], InstantiateTypeInfo)
+instantiateType f ty tyArgs =
   case ty of
     Type.Forall tyParams rest ->
       let tyParamCount = length tyParams
           (prefix, tyArgs') = splitAt tyParamCount tyArgs
-       in calledFunctionType (unvar (\index -> prefix !! fromIntegral @Word64 @Int index) f) (fromScope rest) tyArgs'
+       in instantiateType (unvar (\index -> prefix !! fromIntegral @Word64 @Int index) f) (fromScope rest) tyArgs'
     Type.Fn argTys retTy ->
-      let
-        argTys' = fmap (>>= f) argTys
-        retTy' = retTy >>= f
-        !b = byReference retTy' retTy
-       in
-        ( zipWith (\argTy argTy' -> CallTypeInfo{type_ = argTy', byReference = byReference argTy' argTy}) argTys argTys'
-        , CallTypeInfo{type_ = retTy', byReference = b}
-        )
+      case tyArgs of
+        [] ->
+          let
+            argTys' = fmap (>>= f) argTys
+            retTy' = retTy >>= f
+            !p = getPolymorphism retTy' retTy
+           in
+            ( zipWith (\argTy argTy' -> InstantiateTypeInfo{type_ = argTy', polymorphism = getPolymorphism argTy' argTy}) argTys argTys'
+            , InstantiateTypeInfo{type_ = retTy', polymorphism = p}
+            )
+        _ ->
+          error $ "left over type arguments: " <> show tyArgs
     _ ->
       let
         ty' = ty >>= f
-        !b = byReference ty' ty
+        !p = getPolymorphism ty' ty
        in
-        ([], CallTypeInfo{type_ = ty', byReference = b})
+        ([], InstantiateTypeInfo{type_ = ty', polymorphism = p})
   where
-    byReference :: Type Var -> Type a -> Bool
-    byReference instantiated original =
+    getPolymorphism :: Type Var -> Type a -> Polymorphism
+    getPolymorphism instantiated original =
       case (instantiated, original) of
-        (Type.Var{}, Type.Var{}) -> False
-        (_, Type.Var{}) -> True
-        _ -> False
+        (Type.Var{}, Type.Var{}) -> Poly{wasMonomorphised = False}
+        (_, Type.Var{}) -> Poly{wasMonomorphised = True}
+        _ -> Mono
 
 fromCoreType ::
   (MonadVar m, MonadState FromCoreState m, MonadFix m) =>
@@ -349,3 +363,93 @@ fromCoreType ::
 fromCoreType tyVar ty = do
   let !ty' = fmap tyVar ty
   pure $ Type ty'
+
+fromCoreFunction :: (Text -> Type Void) -> Core.Function -> Function
+fromCoreFunction nameTypes function =
+  runIdentity . runVarT . flip evalStateT initialFromCoreState . flip runReaderT FromCoreEnv{nameTypes} $ do
+    tyArgs' <- for function.tyArgs $ \(_name, _kind) -> do
+      let varTy = Type.Ptr Type.Unknown
+      var <- freshTermVar varTy
+      pure (var, varTy)
+
+    let (argInfos, retInfo) =
+          instantiateType
+            Type.Var
+            (Type.forall_ function.tyArgs $ Type.Fn (fmap snd function.args) function.retTy)
+            (fmap (Type.Var . fst) tyArgs')
+
+    args' <- for argInfos $ \argInfo -> do
+      let ty' = argInfo.type_
+      let varTy = case argInfo.polymorphism of Poly{} -> Type.Ptr ty'; Mono -> ty'
+      var <- freshTermVar varTy
+      pure (var, varTy)
+
+    (mDest, retTy) <- do
+      let retTy = retInfo.type_
+      case retInfo.polymorphism of
+        Poly{} -> do
+          let varTy = Type.Ptr retTy
+          var <- freshTermVar varTy
+          pure (Just var, varTy)
+        Mono ->
+          pure (Nothing, retTy)
+
+    _ <- start "start" []
+
+    body' <-
+      fromCoreExpr
+        (\index -> fst $ tyArgs' !! fromIntegral @Word64 @Int index)
+        (\index -> fst $ args' !! fromIntegral @Word64 @Int index)
+        function.body
+
+    terminator <-
+      case mDest of
+        Just dest -> do
+          dict <-
+            case retInfo.type_ of
+              Type.Var var ->
+                pure var
+              _ ->
+                undefined
+
+          let moveTy = Type.Fn [Type.Ptr Type.Unknown, retTy, retTy] retTy
+          var <- freshTermVar moveTy
+          emit $ LetC var moveTy (GetTypeDictField (Var dict) TypeDictMove)
+
+          src <-
+            case body' of
+              Var src ->
+                pure src
+              _ -> do
+                src <- freshTermVar retTy
+                emit $ LetS src retTy body'
+                pure src
+
+          var' <- freshTermVar retTy
+          emit $ LetC var' retTy (Call (Var var) [dict, src, dest])
+
+          pure . Return $ Var var'
+        Nothing ->
+          pure $ Return body'
+
+    previousBlocks <- gets (.previousBlocks)
+    currentName <- gets (.currentName)
+    currentParams <- gets (.currentParams)
+    currentInstructions <- gets (.currentInstructions)
+
+    pure
+      Function
+        { name = function.name
+        , args = tyArgs' <> args' <> foldMap (\dest -> [(dest, retTy)]) mDest
+        , retTy
+        , blocks =
+            DList.toList $
+              DList.snoc
+                previousBlocks
+                Block
+                  { name = currentName
+                  , params = currentParams
+                  , instructions = DList.toList currentInstructions
+                  , terminator
+                  }
+        }
