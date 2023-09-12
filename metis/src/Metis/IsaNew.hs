@@ -20,6 +20,12 @@ module Metis.IsaNew (
   AddressBase (..),
   addOffset,
   Symbol (..),
+
+  -- * Printing
+  printAddress,
+  printSymbol,
+  printImmediate,
+  printRegister,
 ) where
 
 import Data.Hashable (Hashable)
@@ -27,6 +33,8 @@ import Data.Int (Int64)
 import Data.Kind (Type)
 import Data.Sequence (Seq)
 import Data.Text (Text)
+import Data.Text.Lazy.Builder (Builder)
+import qualified Data.Text.Lazy.Builder as Builder
 import Data.Word (Word64)
 import GHC.Generics (Generic)
 
@@ -84,3 +92,30 @@ addOffset addr offset = addr{offset = addr.offset + offset}
 
 newtype Symbol = Symbol {value :: Text}
   deriving (Eq, Show, Hashable)
+
+printAddress :: (var -> Builder) -> Address var -> Builder
+printAddress printVar Address{base, offset} =
+  (if offset /= 0 then Builder.fromString (show offset) else mempty)
+    <> "("
+    <> printAddressBase printVar base
+    <> ")"
+
+printAddressBase :: (var -> Builder) -> AddressBase var -> Builder
+printAddressBase printVar memBase =
+  case memBase of
+    BaseVar reg ->
+      printVar reg
+    BaseLabel sym ->
+      printSymbol sym
+
+printSymbol :: Symbol -> Builder
+printSymbol sym = Builder.fromText sym.value
+
+printImmediate :: Immediate -> Builder
+printImmediate imm =
+  "$" <> case imm of
+    Word64 i -> Builder.fromString (show i)
+    Label l -> Builder.fromText l.value
+
+printRegister :: (Isa isa) => Register isa -> Builder
+printRegister reg = "%" <> Builder.fromText (registerName reg)

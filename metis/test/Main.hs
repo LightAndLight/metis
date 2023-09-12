@@ -3,6 +3,7 @@ module Main (main) where
 import qualified Test.Anf
 import qualified Test.Compile
 import qualified Test.CoreToAsm
+import qualified Test.CoreToAsmNew
 import Test.Hspec (hspec)
 import qualified Test.InstSelection
 import qualified Test.Liveness

@@ -273,7 +273,9 @@ spec =
     describe "fromCoreFunction" $ do
       let
         ssaShouldBe :: (HasCallStack) => Function -> SSA.Function -> IO ()
-        ssaShouldBe function expectation = SSA.fromCoreFunction (const undefined) function `shouldBe` expectation
+        ssaShouldBe function expectation = do
+          actual <- runVarT $ SSA.fromCoreFunction (const undefined) function
+          actual `shouldBe` expectation
 
       it "id @(a : Type) (x : a) : a = x" $ do
         Function
@@ -325,6 +327,21 @@ spec =
                             SSA.Return (SSA.Var $ SSA.unsafeVar 4)
                         }
                     ]
+            , varTypes =
+                [ (SSA.unsafeVar 0, Type.Ptr Type.Unknown)
+                , (SSA.unsafeVar 1, Type.Ptr . Type.Var $ SSA.unsafeVar 0)
+                , (SSA.unsafeVar 2, Type.Ptr . Type.Var $ SSA.unsafeVar 0)
+                ,
+                  ( SSA.unsafeVar 3
+                  , Type.Fn
+                      [ Type.Ptr Type.Unknown
+                      , Type.Ptr . Type.Var $ SSA.unsafeVar 0
+                      , Type.Ptr . Type.Var $ SSA.unsafeVar 0
+                      ]
+                      (Type.Ptr . Type.Var $ SSA.unsafeVar 0)
+                  )
+                , (SSA.unsafeVar 4, Type.Ptr . Type.Var $ SSA.unsafeVar 0)
+                ]
             }
 
     describe "calledTypeInfo" $ do

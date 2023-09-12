@@ -21,6 +21,8 @@ module Metis.InstSelectionNew (
   instSelectionBlock,
   instSelectionArgs,
   instSelectionReturn,
+  Function (..),
+  instSelectionFunction,
 ) where
 
 import Control.Monad ((<=<))
@@ -163,3 +165,10 @@ instSelectionBlock InstSelection{selectInstruction, selectTerminator} SSA.Block{
     traverse_ (tell . DList.fromList <=< lift . selectInstruction) instructions
     tell . DList.fromList =<< lift (selectTerminator terminator)
   pure Block{name, instructions = DList.toList instructions'}
+
+data Function isa var = Function {name :: Text, blocks :: [Block isa var]}
+
+instSelectionFunction :: (MonadState InstSelState m) => InstSelection isa m -> SSA.Function -> m (Function isa (Var isa))
+instSelectionFunction dict function = do
+  blocks' <- traverse (instSelectionBlock dict) function.blocks
+  pure Function{name = function.name, blocks = blocks'}

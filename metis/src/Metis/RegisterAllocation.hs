@@ -22,6 +22,8 @@ module Metis.RegisterAllocation (
   VarInfo (..),
   Usage (..),
   allocRegisters,
+  allocRegistersBlock,
+  allocRegistersFunction,
 ) where
 
 import Control.Lens.Cons (uncons)
@@ -372,3 +374,27 @@ allocRegisters ::
   m [Instruction isa (Register isa)]
 allocRegisters dict =
   fmap concat . traverse (allocRegisters1 dict)
+
+allocRegistersBlock ::
+  ( Isa isa
+  , MonadReader AllocRegistersEnv m
+  , MonadState (AllocRegistersState isa) m
+  ) =>
+  AllocRegisters isa ->
+  InstSelection.Block isa (InstSelection.Var isa) ->
+  m (InstSelection.Block isa (Register isa))
+allocRegistersBlock dict block = do
+  instructions' <- allocRegisters dict block.instructions
+  pure block{InstSelection.instructions = instructions'}
+
+allocRegistersFunction ::
+  ( Isa isa
+  , MonadReader AllocRegistersEnv m
+  , MonadState (AllocRegistersState isa) m
+  ) =>
+  AllocRegisters isa ->
+  InstSelection.Function isa (InstSelection.Var isa) ->
+  m (InstSelection.Function isa (Register isa))
+allocRegistersFunction dict function = do
+  blocks' <- traverse (allocRegistersBlock dict) function.blocks
+  pure function{InstSelection.blocks = blocks'}

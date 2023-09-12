@@ -1,10 +1,12 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE RecursiveDo #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
+{-# OPTIONS_GHC -Wno-ambiguous-fields #-}
 
 module Metis.SSA (
   Instruction (..),
@@ -44,7 +46,6 @@ import Control.Monad.State.Strict (StateT, evalStateT, runStateT)
 import Data.DList (DList)
 import qualified Data.DList as DList
 import qualified Data.Either as Either
-import Data.Functor.Identity (runIdentity)
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 import Data.Int (Int64)
@@ -56,7 +57,7 @@ import qualified Metis.Core as Core
 import Metis.Kind (Kind)
 import Metis.Literal (Literal)
 import qualified Metis.Literal as Literal
-import Metis.SSA.Var (MonadVar, Var, runVarT)
+import Metis.SSA.Var (MonadVar, Var)
 import qualified Metis.SSA.Var
 import Metis.Type (Type)
 import qualified Metis.Type as Type
@@ -126,14 +127,6 @@ data Block = Block
   }
   deriving (Eq, Show)
 
-data Function = Function
-  { name :: Text
-  , args :: [(Var, Type Var)]
-  , retTy :: Type Var
-  , blocks :: [Block]
-  }
-  deriving (Eq, Show)
-
 data FromCoreEnv = FromCoreEnv
   {nameTypes :: Text -> Type Void}
 
@@ -189,7 +182,7 @@ freshTermVar ::
   m Var
 freshTermVar ty = do
   var <- Metis.SSA.Var.freshVar
-  modify (\s -> s{varTypes = HashMap.insert var ty s.varTypes})
+  modify (\s -> (s :: FromCoreState){varTypes = HashMap.insert var ty s.varTypes})
   pure var
 
 fromCoreExpr ::
@@ -367,9 +360,18 @@ fromCoreType tyVar ty = do
   let !ty' = fmap tyVar ty
   pure $ Type ty'
 
-fromCoreFunction :: (Text -> Type Void) -> Core.Function -> Function
+data Function = Function
+  { name :: Text
+  , args :: [(Var, Type Var)]
+  , retTy :: Type Var
+  , blocks :: [Block]
+  , varTypes :: HashMap Var (Type Var)
+  }
+  deriving (Eq, Show)
+
+fromCoreFunction :: (MonadFix m, MonadVar m) => (Text -> Type Void) -> Core.Function -> m Function
 fromCoreFunction nameTypes function =
-  runIdentity . runVarT . flip evalStateT initialFromCoreState . flip runReaderT FromCoreEnv{nameTypes} $ do
+  flip evalStateT initialFromCoreState . flip runReaderT FromCoreEnv{nameTypes} $ do
     tyArgs' <- for function.tyArgs $ \(_name, _kind) -> do
       let varTy = Type.Ptr Type.Unknown
       var <- freshTermVar varTy
@@ -439,6 +441,7 @@ fromCoreFunction nameTypes function =
     currentName <- gets (.currentName)
     currentParams <- gets (.currentParams)
     currentInstructions <- gets (.currentInstructions)
+    varTypes <- gets (.varTypes)
 
     pure
       Function
@@ -455,20 +458,24 @@ fromCoreFunction nameTypes function =
                   , instructions = DList.toList currentInstructions
                   , terminator
                   }
+        , varTypes
         }
 
 newtype FromCoreT m a = FromCoreT (ReaderT FromCoreEnv (StateT FromCoreState m) a)
-  deriving (Functor, Applicative, Monad, MonadReader FromCoreEnv, MonadState FromCoreState)
+  deriving (Functor, Applicative, Monad, MonadFix, MonadReader FromCoreEnv, MonadState FromCoreState, MonadVar)
 
-toBlocks :: (Monad m) => FromCoreEnv -> FromCoreT m Simple -> m [Block]
+toBlocks :: (Monad m) => FromCoreEnv -> FromCoreT m Simple -> m (HashMap Var (Type Var), [Block])
 toBlocks env (FromCoreT ma) = do
   (simple, s) <- flip runStateT initialFromCoreState $ runReaderT ma env
-  pure . DList.toList $
-    DList.snoc
-      s.previousBlocks
-      Block
-        { name = s.currentName
-        , params = s.currentParams
-        , instructions = DList.toList s.currentInstructions
-        , terminator = Return simple
-        }
+  pure
+    ( s.varTypes
+    , DList.toList $
+        DList.snoc
+          s.previousBlocks
+          Block
+            { name = s.currentName
+            , params = s.currentParams
+            , instructions = DList.toList s.currentInstructions
+            , terminator = Return simple
+            }
+    )

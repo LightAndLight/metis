@@ -27,8 +27,11 @@ library
     exposed-modules:  
         Metis.Anf
         Metis.Asm
+        Metis.AsmNew
         Metis.Asm.Builder
+        Metis.Asm.BuilderNew
         Metis.Asm.Class
+        Metis.Asm.ClassNew
         Metis.Codegen
         Metis.Compile
         Metis.Core

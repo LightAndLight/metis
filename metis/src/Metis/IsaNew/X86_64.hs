@@ -15,6 +15,7 @@ module Metis.IsaNew.X86_64 (
   Register (..),
   allocRegisters_X86_64,
   instSelection_X86_64,
+  printInstruction_X86_64,
 ) where
 
 import Control.Monad.Reader.Class (MonadReader, asks)
@@ -25,10 +26,23 @@ import Data.DList (DList)
 import qualified Data.DList as DList
 import Data.Hashable (Hashable)
 import qualified Data.Sequence as Seq
+import Data.Text.Lazy.Builder (Builder)
 import GHC.Generics (Generic)
 import Metis.InstSelectionNew (InstSelEnv (..), InstSelState, InstSelection (..), Value (..), Var (..))
 import qualified Metis.InstSelectionNew as InstSelection
-import Metis.IsaNew (Address (..), Immediate (..), Instruction, Isa (..), Register, Symbol (..), addOffset, framePointerRegister)
+import Metis.IsaNew (
+  Address (..),
+  Immediate (..),
+  Instruction,
+  Isa (..),
+  Register,
+  Symbol (..),
+  addOffset,
+  framePointerRegister,
+  printAddress,
+  printImmediate,
+  printSymbol,
+ )
 import Metis.RegisterAllocation (AllocRegisters (..), Usage (..), VarInfo (..))
 import Metis.SSA (Simple)
 import qualified Metis.SSA as SSA
@@ -311,3 +325,68 @@ simpleToVar simple =
       pure $ Virtual var
     SSA.Type _ty ->
       error "TODO: simpleToVar/Type"
+
+printInstruction_X86_64 :: (Eq var, Show var) => (var -> Builder) -> Instruction X86_64 var -> Builder
+printInstruction_X86_64 printVar inst =
+  case inst of
+    Push_r reg ->
+      "push " <> printVar reg
+    Push_m mem ->
+      "push " <> printAddress printVar mem
+    Push_i imm ->
+      "push " <> printImmediate imm
+    Pop_r reg ->
+      "pop " <> printVar reg
+    Mov_ri a b ->
+      "mov " <> printImmediate b <> ", " <> printVar a
+    Mov_rr a b ->
+      "mov " <> printVar b <> ", " <> printVar a
+    Mov_rm a b ->
+      "mov " <> printAddress printVar b <> ", " <> printVar a
+    Mov_mi a b ->
+      "mov " <> printImmediate b <> ", " <> printAddress printVar a
+    Mov_mr a b ->
+      "mov " <> printVar b <> ", " <> printAddress printVar a
+    Lea_rs a b ->
+      "lea " <> printSymbol b <> ", " <> printVar a
+    Lea_rm a b ->
+      "lea " <> printAddress printVar b <> ", " <> printVar a
+    Add_ri a b c ->
+      if a == b
+        then "add " <> printImmediate c <> ", " <> printVar b
+        else error $ "instruction has conflicting destinations: " <> show inst
+    Add_rr a b c ->
+      if a == b
+        then "add " <> printVar c <> ", " <> printVar b
+        else error $ "instruction has conflicting destinations: " <> show inst
+    Sub_ri a b c ->
+      if a == b
+        then "sub " <> printImmediate c <> ", " <> printVar b
+        else error $ "instruction has conflicting destinations: " <> show inst
+    Sub_rr a b c ->
+      if a == b
+        then "sub " <> printVar c <> ", " <> printVar b
+        else error $ "instruction has conflicting destinations: " <> show inst
+    Call_s sym ->
+      "call " <> printSymbol sym
+    Call_r reg ->
+      "call *" <> printVar reg
+    Je_s sym ->
+      "je " <> printSymbol sym
+    Jmp_s sym ->
+      "jmp " <> printSymbol sym
+    Jmp_r reg ->
+      "jmp *" <> printVar reg
+    Jmp_m mem ->
+      "jmp *" <> printAddress printVar mem
+    Ret ->
+      "ret"
+    Ret_i i ->
+      "ret " <> printImmediate i
+    Cmp_ri a b ->
+      -- In AT&T syntax, `cmp a, b` returns "greater than" when `b > a`.
+      -- `Cmp_ri` keeps its arguments in the actual comparison order, so we have to swap the
+      -- operands when generating AT&T syntax.
+      "cmp " <> printImmediate b <> ", " <> printVar a
+    Cmp_mi a b ->
+      "cmp " <> printImmediate b <> ", " <> printAddress printVar a

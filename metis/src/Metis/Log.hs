@@ -21,7 +21,8 @@ import qualified Control.Monad.State.Strict
 import Control.Monad.Trans.Class (MonadTrans, lift)
 import Data.Text (Text)
 import qualified Data.Text.IO as Text.IO
-import Metis.Asm.Class (MonadAsm)
+import qualified Metis.Asm.Class
+import qualified Metis.Asm.ClassNew
 import System.IO (Handle)
 
 class (Monad m) => MonadLog m where
@@ -50,7 +51,8 @@ instance (MonadIO m) => MonadLog (HandleLoggingT m) where
     handle <- ask
     liftIO $ Text.IO.hPutStrLn handle s
 
-instance (MonadAsm isa m) => MonadAsm isa (HandleLoggingT m)
+instance (Metis.Asm.Class.MonadAsm isa m) => Metis.Asm.Class.MonadAsm isa (HandleLoggingT m)
+instance (Metis.Asm.ClassNew.MonadAsm isa m) => Metis.Asm.ClassNew.MonadAsm isa (HandleLoggingT m)
 
 newtype NoLoggingT m a = NoLoggingT {value :: m a}
   deriving (Functor, Applicative, Monad, MonadFix)
@@ -64,4 +66,5 @@ instance MonadTrans NoLoggingT where
 instance (Monad m) => MonadLog (NoLoggingT m) where
   trace _ = pure ()
 
-instance (MonadAsm isa m) => MonadAsm isa (NoLoggingT m)
+instance (Metis.Asm.Class.MonadAsm isa m) => Metis.Asm.Class.MonadAsm isa (NoLoggingT m)
+instance (Metis.Asm.ClassNew.MonadAsm isa m) => Metis.Asm.ClassNew.MonadAsm isa (NoLoggingT m)
