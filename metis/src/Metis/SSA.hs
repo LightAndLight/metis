@@ -21,6 +21,10 @@ module Metis.SSA (
   initialFromCoreState,
   fromCoreExpr,
   fromCoreType,
+
+  -- * Internals
+  CallTypeInfo (..),
+  calledFunctionType,
 ) where
 
 import Bound.Scope.Simple (fromScope)
@@ -231,7 +235,7 @@ fromCoreExpr tyVar tmVar expr =
           var <- freshTermVar ty'
           afterLabel <- start "after" [var]
       pure $ Var var
-    Core.Call ty f tyArgs args -> do
+    Core.Call _ty f tyArgs args -> do
       f' <- fromCoreExpr tyVar tmVar f
 
       fTy <- do
@@ -239,7 +243,7 @@ fromCoreExpr tyVar tmVar expr =
         varTypes <- gets (.varTypes)
         pure . Either.fromRight undefined $ typeOf (const $ error "no varKinds") (fmap absurd . nameTypes) (varTypes HashMap.!) f'
 
-      let (argTyInfos, retTyInfo) = calledFunctionType Type.Var fTy (fmap (fmap tyVar) tyArgs)
+      let (argTyInfos, retTyInfo) = calledFunctionType Type.Var fTy ((fmap . fmap) tyVar tyArgs)
 
       tyArgs' <- for tyArgs $ \tyArg -> do
         tyArg' <- fromCoreType tyVar tyArg
@@ -269,7 +273,7 @@ fromCoreExpr tyVar tmVar expr =
               then do
                 emit $ LetC var (Type.Ptr argTy) (Alloca argTy)
                 var' <- freshTermVar Type.Unit
-                emit $ LetC var' Type.Unit (Store (Var var') arg')
+                emit $ LetC var' Type.Unit (Store (Var var) arg')
               else emit $ LetS var argTy arg'
             pure var
 
@@ -282,12 +286,26 @@ fromCoreExpr tyVar tmVar expr =
             pure [var]
           else pure []
 
-      let !ty' = fmap tyVar ty
-      var <- freshTermVar ty'
-      emit $ LetC var ty' (Call f' $ tyArgs' <> args' <> dest)
-      pure $ Var var
+      (var, varTy) <-
+        if retTyInfo.byReference
+          then do
+            let varTy = Type.Ptr retTy
+            var <- freshTermVar varTy
+            pure (var, varTy)
+          else do
+            var <- freshTermVar retTy
+            pure (var, retTy)
+      emit $ LetC var varTy (Call f' $ tyArgs' <> args' <> dest)
+
+      if retTyInfo.byReference
+        then do
+          var' <- freshTermVar retTy
+          emit $ LetC var' retTy (Load $ Var var)
+          pure $ Var var'
+        else pure $ Var var
 
 data CallTypeInfo = CallTypeInfo {type_ :: Type Var, byReference :: Bool}
+  deriving (Eq, Show)
 
 calledFunctionType ::
   (a -> Type Var) ->
@@ -304,21 +322,21 @@ calledFunctionType f ty tyArgs =
       let
         argTys' = fmap (>>= f) argTys
         retTy' = retTy >>= f
-        !b = byReference retTy retTy'
+        !b = byReference retTy' retTy
        in
-        ( zipWith (\argTy argTy' -> CallTypeInfo{type_ = argTy', byReference = byReference argTy argTy'}) argTys argTys'
+        ( zipWith (\argTy argTy' -> CallTypeInfo{type_ = argTy', byReference = byReference argTy' argTy}) argTys argTys'
         , CallTypeInfo{type_ = retTy', byReference = b}
         )
     _ ->
       let
         ty' = ty >>= f
-        !b = byReference ty ty'
+        !b = byReference ty' ty
        in
         ([], CallTypeInfo{type_ = ty', byReference = b})
   where
-    byReference :: Type a -> Type Var -> Bool
-    byReference t t' =
-      case (t, t') of
+    byReference :: Type Var -> Type a -> Bool
+    byReference instantiated original =
+      case (instantiated, original) of
         (Type.Var{}, Type.Var{}) -> False
         (_, Type.Var{}) -> True
         _ -> False
