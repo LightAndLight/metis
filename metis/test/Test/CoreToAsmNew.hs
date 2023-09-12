@@ -11,10 +11,8 @@ import Control.Monad.Reader (runReaderT)
 import Control.Monad.State.Strict (evalStateT, runStateT)
 import Data.CallStack (HasCallStack)
 import Data.Foldable (traverse_)
-import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 import Data.Sequence (Seq)
-import Data.Text (Text)
 import qualified Data.Text.Lazy as Lazy (Text)
 import qualified Data.Text.Lazy as Text.Lazy
 import qualified Data.Text.Lazy.Builder as Builder
@@ -45,7 +43,6 @@ import Metis.RegisterAllocation (
  )
 import qualified Metis.SSA as SSA
 import Metis.SSA.Var (runVarT)
-import Metis.Type (Type)
 import qualified Metis.Type as Type
 import System.IO (hClose)
 import System.IO.Temp (withSystemTempFile)
@@ -57,10 +54,12 @@ spec =
     describe "x86-64" $ do
       describe "expressions" $ do
         let
-          shouldCompileTo :: (HasCallStack) => (HashMap Text (Type Void), Expr Void Void) -> [Lazy.Text] -> IO ()
-          shouldCompileTo (nameTypes, expr) expectedOutput =
+          shouldCompileTo :: (HasCallStack) => Expr Void Void -> [Lazy.Text] -> IO ()
+          shouldCompileTo expr expectedOutput =
             withSystemTempFile "metis-instruction-selection-logs.txt" $ \tempFilePath tempFileHandle ->
               saveLogsOnFailure tempFilePath $ do
+                let nameTypes = [("f", Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64)]
+
                 (liveness, instsVirtual, instSelState) <-
                   runVarT $ do
                     (varTypes, ssa) <-
@@ -68,9 +67,9 @@ spec =
                         SSA.FromCoreEnv{nameTypes = (nameTypes HashMap.!)}
                         (SSA.fromCoreExpr absurd absurd expr)
 
-                    let liveness = error "TODO: liveness for SSA"
+                    let ssaNameTypes = [("f", Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64)]
 
-                    let ssaNameTys = error "TODO: name types for SSA"
+                    let liveness = error "TODO: liveness for SSA"
 
                     (instsVirtual, instSelState) <-
                       flip runStateT initialInstSelState
@@ -78,7 +77,7 @@ spec =
                           runReaderT
                           InstSelEnv
                             { varKinds = const (error "TODO: remove me?")
-                            , nameTys = (ssaNameTys HashMap.!)
+                            , nameTys = (ssaNameTypes HashMap.!)
                             , varTys = (varTypes HashMap.!)
                             }
                         $ traverse (instSelectionBlock instSelection_X86_64) ssa
@@ -106,8 +105,7 @@ spec =
                 Builder.toLazyText asmText `shouldBe` Text.Lazy.unlines expectedOutput
 
         it "f : Fn (Uint64, Uint64) Uint64 |- let x = 1; let y = 2; f(x, y)" $
-          ( [("f", Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64)]
-          , Let Type.Uint64 (Just "x") Type.Uint64 (Literal $ Literal.Uint64 1) . toScope $
+          ( Let Type.Uint64 (Just "x") Type.Uint64 (Literal $ Literal.Uint64 1) . toScope $
               Let Type.Uint64 (Just "y") Type.Uint64 (Literal $ Literal.Uint64 2) . toScope $
                 Call Type.Uint64 (Name "f") [] [Var . F $ B (), Var $ B ()]
           )
@@ -120,8 +118,7 @@ spec =
                               ]
 
         it "f : Fn (Uint64, Uint64) Uint64 |- let x = 1; let y = 2; let z = f(x, y); x + z" $
-          ( [("f", Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64)]
-          , Let Type.Uint64 (Just "x") Type.Uint64 (Literal $ Literal.Uint64 1) . toScope $
+          ( Let Type.Uint64 (Just "x") Type.Uint64 (Literal $ Literal.Uint64 1) . toScope $
               Let Type.Uint64 (Just "y") Type.Uint64 (Literal $ Literal.Uint64 2) . toScope $
                 Let Type.Uint64 (Just "z") Type.Uint64 (Call Type.Uint64 (Name "f") [] [Var . F $ B (), Var $ B ()]) . toScope $
                   Add Type.Uint64 (Var . F . F $ B ()) (Var $ B ())
@@ -141,8 +138,7 @@ spec =
                               ]
 
         it "f : Fn (Uint64, Uint64) Uint64 |- let x = 1; let y = 2; let z = f(y, x); x + z" $
-          ( [("f", Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64)]
-          , Let Type.Uint64 (Just "x") Type.Uint64 (Literal $ Literal.Uint64 1) . toScope $
+          ( Let Type.Uint64 (Just "x") Type.Uint64 (Literal $ Literal.Uint64 1) . toScope $
               Let Type.Uint64 (Just "y") Type.Uint64 (Literal $ Literal.Uint64 2) . toScope $
                 Let Type.Uint64 (Just "z") Type.Uint64 (Call Type.Uint64 (Name "f") [] [Var $ B (), Var . F $ B ()]) . toScope $
                   Add Type.Uint64 (Var . F . F $ B ()) (Var $ B ())
