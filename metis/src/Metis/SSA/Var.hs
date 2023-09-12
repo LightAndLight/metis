@@ -17,6 +17,7 @@ import Control.Monad.Fix (MonadFix)
 import qualified Control.Monad.Reader
 import Control.Monad.State.Strict (StateT, evalStateT, get, put)
 import Control.Monad.Trans.Class (MonadTrans, lift)
+import qualified Control.Monad.Writer.CPS
 import Data.Hashable (Hashable (..))
 import Data.Word (Word64)
 
@@ -33,6 +34,7 @@ class (Monad m) => MonadVar m where
 
 instance (MonadVar m) => MonadVar (Control.Monad.Reader.ReaderT r m)
 instance (MonadVar m) => MonadVar (Control.Monad.State.Strict.StateT s m)
+instance (MonadVar m, Monoid w) => MonadVar (Control.Monad.Writer.CPS.WriterT w m)
 
 newtype VarT m a = VarT (StateT Word64 m a)
   deriving (Functor, Applicative, Monad, MonadTrans, MonadFix)

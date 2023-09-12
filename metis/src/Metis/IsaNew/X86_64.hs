@@ -19,8 +19,10 @@ module Metis.IsaNew.X86_64 (
 
 import Control.Monad.Reader.Class (MonadReader, asks)
 import Control.Monad.State.Class (MonadState)
+import Control.Monad.Writer.CPS (execWriterT)
 import Control.Monad.Writer.Class (MonadWriter, tell)
 import Data.DList (DList)
+import qualified Data.DList as DList
 import Data.Hashable (Hashable)
 import qualified Data.Sequence as Seq
 import GHC.Generics (Generic)
@@ -209,18 +211,23 @@ allocRegisters_X86_64 =
         Sub_rr a b c ->
           Sub_rr (VarInfo (DefReuse b) a) (VarInfo (Use [c]) b) (VarInfo (Use [b]) c)
 
-instSelection_X86_64' :: InstSelection X86_64
-instSelection_X86_64' = InstSelection{move = Mov_rr}
+instSelection_X86_64 :: (MonadVar m, MonadReader InstSelEnv m, MonadState InstSelState m) => InstSelection X86_64 m
+instSelection_X86_64 =
+  InstSelection
+    { move = Mov_rr
+    , selectInstruction = fmap DList.toList . execWriterT . selectInstruction_X86_64
+    , selectTerminator = error "TODO: selectTerminator_X86_64"
+    }
 
-instSelection_X86_64 ::
+selectInstruction_X86_64 ::
   ( MonadVar m
   , MonadReader InstSelEnv m
   , MonadState InstSelState m
   , MonadWriter (DList (Instruction X86_64 (InstSelection.Var X86_64))) m
   ) =>
   SSA.Instruction ->
-  m (InstSelection.Var X86_64)
-instSelection_X86_64 inst =
+  m ()
+selectInstruction_X86_64 inst =
   case inst of
     SSA.LetS var _ty value -> do
       case value of
@@ -232,7 +239,6 @@ instSelection_X86_64 inst =
           tell [Mov_ri (Virtual var) (InstSelection.literalToImmediate lit)]
         SSA.Type{} ->
           error "TODO: instSelection/LetS/Type"
-      pure $ Virtual var
     SSA.LetC var _ty operation ->
       case operation of
         SSA.Binop op a b -> do
@@ -250,14 +256,13 @@ instSelection_X86_64 inst =
                   tell [Sub_ri (Virtual var) a' b'']
                 ValueVar b'' ->
                   tell [Sub_rr (Virtual var) a' b'']
-          pure $ Virtual var
         SSA.Call f xs -> do
           varKinds <- asks (.varKinds)
           nameTys <- asks (.nameTys)
           varTys <- asks (.varTys)
           case SSA.typeOf varKinds nameTys varTys f of
-            Right (Type.Fn argTys retTy) -> do
-              InstSelection.instSelectionArgs instSelection_X86_64' (generalPurposeRegisters @X86_64) xs argTys
+            Right (Type.Fn argTys _retTy) -> do
+              InstSelection.instSelectionArgs instSelection_X86_64 (generalPurposeRegisters @X86_64) xs argTys
               case f of
                 SSA.Var src ->
                   tell [Call_r (Virtual src)]
@@ -267,13 +272,11 @@ instSelection_X86_64 inst =
                   error $ "can't call literal: " <> show lit
                 SSA.Type t ->
                   error $ "can't call type: " <> show t
-              pure $ InstSelection.instSelectionReturn (generalPurposeRegisters @X86_64) var retTy
             t ->
               error $ "can't call non-function: " <> show t
         SSA.Alloca t -> do
           addr <- InstSelection.allocLocal @X86_64 $ Type.sizeOf t
           tell [Lea_rm (Virtual var) addr]
-          pure $ Virtual var
         SSA.Store ptr value -> do
           let ptr' = InstSelection.simpleToAddress ptr
           case InstSelection.simpleToValue value of
@@ -281,15 +284,12 @@ instSelection_X86_64 inst =
               tell [Mov_mi ptr' i]
             ValueVar v ->
               tell [Mov_mr ptr' v]
-          pure $ Virtual var
         SSA.Load ptr -> do
           let ptr' = InstSelection.simpleToAddress ptr
           tell [Mov_rm (Virtual var) ptr']
-          pure $ Virtual var
         SSA.GetTypeDictField ptr field -> do
           let ptr' = InstSelection.simpleToAddress ptr
           tell [Mov_rm (Virtual var) (ptr' `addOffset` SSA.typeDictFieldOffset field)]
-          pure $ Virtual var
 
 simpleToVar ::
   ( MonadVar m

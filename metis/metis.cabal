@@ -87,10 +87,11 @@ test-suite metis-test
     default-language: Haskell2010
     other-modules:
         ErrorReporting
-        Test.InstSelection
         Test.Anf
         Test.Compile
         Test.CoreToAsm
+        Test.CoreToAsmNew
+        Test.InstSelection
         Test.Liveness
         Test.RegisterAllocation
         Test.SSA

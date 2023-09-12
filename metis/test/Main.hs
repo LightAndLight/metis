@@ -13,10 +13,11 @@ import qualified Test.SimplifyAsm
 main :: IO ()
 main =
   hspec $ do
-    Test.InstSelection.spec
     Test.Anf.spec
     Test.Compile.spec
     Test.CoreToAsm.spec
+    Test.CoreToAsmNew.spec
+    Test.InstSelection.spec
     Test.Liveness.spec
     Test.RegisterAllocation.spec
     Test.SSA.spec

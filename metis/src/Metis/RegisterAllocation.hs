@@ -16,6 +16,7 @@
 module Metis.RegisterAllocation (
   AllocRegistersEnv (..),
   AllocRegistersState (..),
+  initialAllocRegistersState,
   Location (..),
   AllocRegisters (..),
   VarInfo (..),
@@ -59,6 +60,17 @@ data AllocRegistersState isa = AllocRegistersState
   , freeMemory :: HashMap Word64 (Seq (Address (Register isa)))
   , stackFrameTop :: Int64
   }
+
+initialAllocRegistersState :: forall isa. (Isa isa) => AllocRegistersState isa
+initialAllocRegistersState =
+  AllocRegistersState
+    { locations = mempty
+    , varSizes = mempty
+    , freeRegisters = generalPurposeRegisters @isa
+    , occupiedRegisters = mempty
+    , freeMemory = mempty
+    , stackFrameTop = 0
+    }
 
 data Location :: Type -> Type where
   Spilled :: Address (Register isa) -> Word64 -> Location isa

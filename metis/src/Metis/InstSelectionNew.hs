@@ -9,6 +9,7 @@
 module Metis.InstSelectionNew (
   InstSelEnv (..),
   InstSelState (..),
+  initialInstSelState,
   Var (..),
   Value (..),
   literalToImmediate,
@@ -16,14 +17,20 @@ module Metis.InstSelectionNew (
   allocLocal,
   simpleToAddress,
   InstSelection (..),
+  Block (..),
+  instSelectionBlock,
   instSelectionArgs,
   instSelectionReturn,
 ) where
 
+import Control.Monad ((<=<))
 import Control.Monad.State.Class (MonadState, gets, modify)
+import Control.Monad.Trans.Class (lift)
+import Control.Monad.Trans.Writer.CPS (execWriterT)
 import Control.Monad.Writer.Class (MonadWriter, tell)
 import Data.DList (DList)
 import qualified Data.DList as DList
+import Data.Foldable (traverse_)
 import Data.Int (Int64)
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
@@ -47,6 +54,9 @@ data InstSelEnv = InstSelEnv
   }
 
 data InstSelState = InstSelState {stackFrameTop :: Int64}
+
+initialInstSelState :: InstSelState
+initialInstSelState = InstSelState{stackFrameTop = 0}
 
 data Var isa
   = Virtual SSA.Var
@@ -96,13 +106,15 @@ simpleToAddress simple =
     SSA.Type _ty ->
       error "TODO: simpleToAddress/Type"
 
-data InstSelection isa = InstSelection
+data InstSelection isa m = InstSelection
   { move :: forall var. var -> var -> Instruction isa var
+  , selectInstruction :: SSA.Instruction -> m [Instruction isa (Var isa)]
+  , selectTerminator :: SSA.Terminator -> m [Instruction isa (Var isa)]
   }
 
 instSelectionArgs ::
   (MonadVar m, MonadWriter (DList (Instruction isa (Var isa))) m) =>
-  InstSelection isa ->
+  InstSelection isa m ->
   Seq (Register isa) ->
   [SSA.Var] ->
   [Type SSA.Var] ->
@@ -139,3 +151,15 @@ instSelectionReturn outputRegisters dest retTy =
       error "TODO: instSelectionReturn/Composite"
     Type.Erased{} ->
       error "TODO: instSelectionReturn/Erased"
+
+data Block isa var = Block
+  { name :: Text
+  , instructions :: [Instruction isa var]
+  }
+
+instSelectionBlock :: (MonadState InstSelState m) => InstSelection isa m -> SSA.Block -> m (Block isa (Var isa))
+instSelectionBlock InstSelection{selectInstruction, selectTerminator} SSA.Block{name, params = _params, instructions, terminator} = do
+  instructions' <- execWriterT $ do
+    traverse_ (tell . DList.fromList <=< lift . selectInstruction) instructions
+    tell . DList.fromList =<< lift (selectTerminator terminator)
+  pure Block{name, instructions = DList.toList instructions'}

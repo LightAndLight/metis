@@ -1,5 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE RecursiveDo #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -20,6 +21,8 @@ module Metis.SSA (
   FromCoreEnv (..),
   FromCoreState (..),
   initialFromCoreState,
+  FromCoreT,
+  toBlocks,
   fromCoreExpr,
   fromCoreType,
   fromCoreFunction,
@@ -34,10 +37,10 @@ import Bound.Scope.Simple (fromScope)
 import Bound.Var (unvar)
 import Control.Monad (when)
 import Control.Monad.Fix (MonadFix)
-import Control.Monad.Reader (runReaderT)
+import Control.Monad.Reader (ReaderT, runReaderT)
 import Control.Monad.Reader.Class (MonadReader, asks)
 import Control.Monad.State.Class (MonadState, gets, modify)
-import Control.Monad.State.Strict (evalStateT)
+import Control.Monad.State.Strict (StateT, evalStateT, runStateT)
 import Data.DList (DList)
 import qualified Data.DList as DList
 import qualified Data.Either as Either
@@ -452,4 +455,20 @@ fromCoreFunction nameTypes function =
                   , instructions = DList.toList currentInstructions
                   , terminator
                   }
+        }
+
+newtype FromCoreT m a = FromCoreT (ReaderT FromCoreEnv (StateT FromCoreState m) a)
+  deriving (Functor, Applicative, Monad, MonadReader FromCoreEnv, MonadState FromCoreState)
+
+toBlocks :: (Monad m) => FromCoreEnv -> FromCoreT m Simple -> m [Block]
+toBlocks env (FromCoreT ma) = do
+  (simple, s) <- flip runStateT initialFromCoreState $ runReaderT ma env
+  pure . DList.toList $
+    DList.snoc
+      s.previousBlocks
+      Block
+        { name = s.currentName
+        , params = s.currentParams
+        , instructions = DList.toList s.currentInstructions
+        , terminator = Return simple
         }
