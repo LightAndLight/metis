@@ -18,6 +18,7 @@ module Metis.SSA (
   Block (..),
   FromCoreEnv (..),
   FromCoreState (..),
+  initialFromCoreState,
   fromCoreExpr,
   fromCoreType,
 ) where
@@ -50,6 +51,7 @@ import qualified Metis.Type as Type
 data Instruction
   = LetS Var (Type Var) Simple
   | LetC Var (Type Var) Compound
+  deriving (Eq, Show)
 
 data Simple
   = Var Var
@@ -98,8 +100,10 @@ data Terminator
   = Return Simple
   | IfThenElse Simple Label Label
   | Jump Label Simple
+  deriving (Eq, Show)
 
 newtype Label = Label Text
+  deriving (Eq, Show)
 
 data Block = Block
   { name :: Text
@@ -107,6 +111,7 @@ data Block = Block
   , instructions :: [Instruction]
   , terminator :: Terminator
   }
+  deriving (Eq, Show)
 
 data FromCoreEnv = FromCoreEnv
   {nameTypes :: Text -> Type Void}
@@ -118,6 +123,16 @@ data FromCoreState = FromCoreState
   , currentInstructions :: DList Instruction
   , varTypes :: HashMap Var (Type Var)
   }
+
+initialFromCoreState :: FromCoreState
+initialFromCoreState =
+  FromCoreState
+    { previousBlocks = mempty
+    , currentName = "unnamed"
+    , currentParams = []
+    , currentInstructions = mempty
+    , varTypes = mempty
+    }
 
 emit :: (MonadState FromCoreState m) => Instruction -> m ()
 emit inst = modify (\s -> s{currentInstructions = DList.snoc s.currentInstructions inst})
