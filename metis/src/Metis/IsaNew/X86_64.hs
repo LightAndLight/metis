@@ -230,7 +230,7 @@ instSelection_X86_64 =
   InstSelection
     { move = Mov_rr
     , selectInstruction = fmap DList.toList . execWriterT . selectInstruction_X86_64
-    , selectTerminator = error "TODO: selectTerminator_X86_64"
+    , selectTerminator = selectTerminator_X86_64
     }
 
 selectInstruction_X86_64 ::
@@ -256,7 +256,7 @@ selectInstruction_X86_64 inst =
     SSA.LetC var _ty operation ->
       case operation of
         SSA.Binop op a b -> do
-          a' <- simpleToVar a
+          a' <- simpleAsVar a
           case (op, InstSelection.simpleToValue b) of
             (SSA.Add, b') ->
               case b' of
@@ -305,26 +305,78 @@ selectInstruction_X86_64 inst =
           let ptr' = InstSelection.simpleToAddress ptr
           tell [Mov_rm (Virtual var) (ptr' `addOffset` SSA.typeDictFieldOffset field)]
 
+selectTerminator_X86_64 ::
+  ( MonadVar m
+  , MonadReader InstSelEnv m
+  , MonadState InstSelState m
+  ) =>
+  SSA.Terminator ->
+  m [Instruction X86_64 (InstSelection.Var X86_64)]
+selectTerminator_X86_64 term =
+  fmap DList.toList . execWriterT $
+    case term of
+      SSA.Return value -> do
+        simpleToVar value (InstSelection.Physical Nothing Rax)
+        tell $
+          DList.fromList
+            [ Pop_r $ InstSelection.Physical Nothing Rbp
+            , Ret
+            ]
+      SSA.IfThenElse cond a b -> do
+        var <- simpleAsVar cond
+        tell $
+          DList.fromList
+            [ Cmp_ri var (Word64 0)
+            , Je_s $ Symbol b.value
+            , Jmp_s $ Symbol a.value
+            ]
+      SSA.Jump label arg -> do
+        _ <- simpleAsVar arg
+        tell $
+          DList.fromList
+            [ Jmp_s . Symbol $ label.value
+            ]
+
 simpleToVar ::
   ( MonadVar m
   , MonadWriter (DList (Instruction X86_64 (InstSelection.Var X86_64))) m
   ) =>
   Simple ->
+  Var X86_64 ->
+  m ()
+simpleToVar simple dest =
+  case simple of
+    SSA.Var var ->
+      tell $ DList.fromList [Mov_rr dest (Virtual var) | dest /= Virtual var]
+    SSA.Name name ->
+      tell . DList.singleton $ Lea_rs dest (Symbol name)
+    SSA.Literal lit ->
+      tell . DList.singleton $ Mov_ri dest (InstSelection.literalToImmediate lit)
+    SSA.Type _ty ->
+      error "TODO: simpleAsVar/Type"
+
+simpleAsVar ::
+  ( MonadVar m
+  , MonadWriter (DList (Instruction X86_64 (InstSelection.Var X86_64))) m
+  ) =>
+  Simple ->
   m (Var X86_64)
-simpleToVar simple =
+simpleAsVar simple =
   case simple of
     SSA.Var var ->
       pure $ Virtual var
-    SSA.Name name -> do
-      var <- freshVar
-      tell [Lea_rs (Virtual var) (Symbol name)]
-      pure $ Virtual var
-    SSA.Literal lit -> do
-      var <- freshVar
-      tell [Mov_ri (Virtual var) (InstSelection.literalToImmediate lit)]
-      pure $ Virtual var
-    SSA.Type _ty ->
-      error "TODO: simpleToVar/Type"
+    SSA.Name{} -> do
+      dest <- Virtual <$> freshVar
+      simpleToVar simple dest
+      pure dest
+    SSA.Literal{} -> do
+      dest <- Virtual <$> freshVar
+      simpleToVar simple dest
+      pure dest
+    SSA.Type _ty -> do
+      dest <- Virtual <$> freshVar
+      simpleToVar simple dest
+      pure dest
 
 printInstruction_X86_64 :: (Eq var, Show var) => (var -> Builder) -> Instruction X86_64 var -> Builder
 printInstruction_X86_64 printVar inst =

@@ -116,7 +116,7 @@ data Terminator
   | Jump Label Simple
   deriving (Eq, Show)
 
-newtype Label = Label Text
+newtype Label = Label {value :: Text}
   deriving (Eq, Show)
 
 data Block = Block

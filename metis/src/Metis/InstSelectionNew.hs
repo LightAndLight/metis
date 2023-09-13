@@ -4,6 +4,7 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Metis.InstSelectionNew (
@@ -66,6 +67,9 @@ data Var isa
     -- supplied, you can provide liveness information about this usage of this register. When the
     -- variable name is omitted, it is considered in use until the end of the program.
     Physical (Maybe SSA.Var) (Register isa)
+
+deriving instance (Isa isa) => Eq (Var isa)
+deriving instance (Isa isa) => Show (Var isa)
 
 allocLocal :: forall isa m. (Isa isa, MonadState InstSelState m) => Word64 -> m (Address (Var isa))
 allocLocal size = do
