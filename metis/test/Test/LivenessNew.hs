@@ -42,12 +42,7 @@ spec =
               Add Type.Uint64 (Var $ B ()) (Var $ B ())
 
       (mempty, expr)
-        `livenessShouldBe` (mempty :: Liveness)
-          { varKills =
-              [ (SSA.unsafeVar 0, [])
-              , (SSA.unsafeVar 1, [SSA.unsafeVar 0])
-              ]
-          }
+        `livenessShouldBe` (mempty :: Liveness){varKills = [(SSA.unsafeVar 1, [SSA.unsafeVar 0])]}
     it "let x = if true then let y = 1; y + 98 else let y = 2; let z = 3; y + z + 95; x + x" $ do
       let
         expr =
@@ -91,19 +86,13 @@ spec =
       (mempty, expr)
         `livenessShouldBe` (mempty :: Liveness)
           { varKills =
-              [ (SSA.unsafeVar 0, [])
-              , (SSA.unsafeVar 1, [SSA.unsafeVar 0])
-              , (SSA.unsafeVar 2, [])
-              , (SSA.unsafeVar 3, [])
+              [ (SSA.unsafeVar 1, [SSA.unsafeVar 0])
               , (SSA.unsafeVar 4, [SSA.unsafeVar 2, SSA.unsafeVar 3])
               , (SSA.unsafeVar 5, [SSA.unsafeVar 4])
               , (SSA.unsafeVar 7, [SSA.unsafeVar 6])
               ]
           , labelKills =
-              [ (SSA.Label "then", [])
-              , (SSA.Label "else", [])
-              , (SSA.Label "after", [SSA.unsafeVar 1, SSA.unsafeVar 5])
-              ]
+              [(SSA.Label "after", [SSA.unsafeVar 1, SSA.unsafeVar 5])]
           }
 
     it "let x = 1; let y = if true then x else 22; x + y" $ do
@@ -132,13 +121,7 @@ spec =
       (mempty, expr)
         `livenessShouldBe` (mempty :: Liveness)
           { varKills =
-              [ (SSA.unsafeVar 0, [])
-              , (SSA.unsafeVar 2, [SSA.unsafeVar 0, SSA.unsafeVar 1])
-              ]
-          , labelKills =
-              [ (SSA.Label "then", [])
-              , (SSA.Label "else", [])
-              , (SSA.Label "after", [])
+              [ (SSA.unsafeVar 2, [SSA.unsafeVar 0, SSA.unsafeVar 1])
               ]
           }
 
@@ -160,9 +143,7 @@ spec =
       ([("f", Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64)], expr)
         `livenessShouldBe` (mempty :: Liveness)
           { varKills =
-              [ (SSA.unsafeVar 0, [])
-              , (SSA.unsafeVar 1, [])
-              , (SSA.unsafeVar 2, [SSA.unsafeVar 1])
+              [ (SSA.unsafeVar 2, [SSA.unsafeVar 1])
               , (SSA.unsafeVar 3, [SSA.unsafeVar 0, SSA.unsafeVar 2])
               ]
           }

@@ -52,18 +52,20 @@ livenessInstruction usedAfter inst =
     LetS var _ value ->
       let valueVars = varsSimple value
           usedBefore = HashSet.delete var usedAfter <> valueVars
+          varKills = valueVars `HashSet.difference` usedAfter
        in ( usedBefore
           , Liveness
-              { varKills = HashMap.singleton var (valueVars `HashSet.difference` usedAfter)
+              { varKills = if HashSet.null varKills then mempty else HashMap.singleton var varKills
               , labelKills = mempty
               }
           )
     LetC var _ value ->
       let valueVars = varsCompound value
           usedBefore = HashSet.delete var usedAfter <> valueVars
+          varKills = valueVars `HashSet.difference` usedAfter
        in ( usedBefore
           , Liveness
-              { varKills = HashMap.singleton var (valueVars `HashSet.difference` usedAfter)
+              { varKills = if HashSet.null varKills then mempty else HashMap.singleton var varKills
               , labelKills = mempty
               }
           )
@@ -84,12 +86,22 @@ livenessTerminator labelUsedAfter term =
           abUsedAfter = aUsedAfter <> bUsedAfter
           usedBefore = abUsedAfter <> vars
           labelKills = vars `HashSet.difference` abUsedAfter
-       in (usedBefore, mempty{labelKills = HashMap.fromList [(a, labelKills), (b, labelKills)]})
+       in ( usedBefore
+          , mempty
+              { labelKills = if HashSet.null labelKills then mempty else HashMap.fromList [(a, labelKills), (b, labelKills)]
+              }
+          )
     Jump label arg ->
       let vars = varsSimple arg
           usedAfter = fold $ HashMap.lookup label labelUsedAfter
           usedBefore = usedAfter <> vars
-       in (usedBefore, Liveness{varKills = mempty, labelKills = HashMap.singleton label (vars `HashSet.difference` usedAfter)})
+          labelKills = vars `HashSet.difference` usedAfter
+       in ( usedBefore
+          , Liveness
+              { varKills = mempty
+              , labelKills = if HashSet.null labelKills then mempty else HashMap.singleton label labelKills
+              }
+          )
 
 livenessInstructions ::
   HashSet Var ->
