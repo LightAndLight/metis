@@ -7,15 +7,14 @@ import Bound.Var (Var (..))
 import Data.CallStack (HasCallStack)
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
-import Data.HashSet (HashSet)
 import Data.Text (Text)
 import Data.Void (Void, absurd)
 import Metis.Core (Expr (..))
 import qualified Metis.Literal as Literal
-import Metis.LivenessNew (livenessBlocks)
+import Metis.LivenessNew (Liveness (..), livenessBlocks)
 import qualified Metis.SSA as SSA
 import Metis.SSA.Var (runVarT)
-import qualified Metis.SSA.Var as SSA (Var, unsafeVar)
+import qualified Metis.SSA.Var as SSA (unsafeVar)
 import Metis.Type (Type)
 import qualified Metis.Type as Type
 import Test.Hspec (Spec, describe, it, shouldBe)
@@ -24,12 +23,12 @@ spec :: Spec
 spec =
   describe "Test.LivenessNew" $ do
     let
-      livenessShouldBe :: (HasCallStack) => (HashMap Text (Type Void), Expr Void Void) -> HashMap SSA.Var (HashSet SSA.Var) -> IO ()
+      livenessShouldBe :: (HasCallStack) => (HashMap Text (Type Void), Expr Void Void) -> Liveness -> IO ()
       livenessShouldBe (nameTypes, expr) expectation = do
         (_varTypes, ssa) <-
           runVarT . SSA.toBlocks SSA.FromCoreEnv{nameTypes = (nameTypes HashMap.!)} $
             SSA.fromCoreExpr absurd absurd expr
-        let liveness = livenessBlocks ssa
+        let (labelUsedAfter, _, liveness) = livenessBlocks labelUsedAfter ssa
 
         liveness `shouldBe` expectation
 
@@ -43,9 +42,12 @@ spec =
               Add Type.Uint64 (Var $ B ()) (Var $ B ())
 
       (mempty, expr)
-        `livenessShouldBe` [ (SSA.unsafeVar 0, [])
-                           , (SSA.unsafeVar 1, [SSA.unsafeVar 0])
-                           ]
+        `livenessShouldBe` (mempty :: Liveness)
+          { varKills =
+              [ (SSA.unsafeVar 0, [])
+              , (SSA.unsafeVar 1, [SSA.unsafeVar 0])
+              ]
+          }
     it "let x = if true then let y = 1; y + 98 else let y = 2; let z = 3; y + z + 95; x + x" $ do
       let
         expr =
@@ -87,15 +89,22 @@ spec =
       -}
 
       (mempty, expr)
-        `livenessShouldBe` [ (SSA.unsafeVar 0, [])
-                           , (SSA.unsafeVar 1, [SSA.unsafeVar 0])
-                           , (SSA.unsafeVar 2, [])
-                           , (SSA.unsafeVar 3, [])
-                           , (SSA.unsafeVar 4, [SSA.unsafeVar 2, SSA.unsafeVar 3])
-                           , (SSA.unsafeVar 5, [SSA.unsafeVar 4])
-                           , (SSA.unsafeVar 6, [SSA.unsafeVar 1, SSA.unsafeVar 5])
-                           , (SSA.unsafeVar 7, [SSA.unsafeVar 6])
-                           ]
+        `livenessShouldBe` (mempty :: Liveness)
+          { varKills =
+              [ (SSA.unsafeVar 0, [])
+              , (SSA.unsafeVar 1, [SSA.unsafeVar 0])
+              , (SSA.unsafeVar 2, [])
+              , (SSA.unsafeVar 3, [])
+              , (SSA.unsafeVar 4, [SSA.unsafeVar 2, SSA.unsafeVar 3])
+              , (SSA.unsafeVar 5, [SSA.unsafeVar 4])
+              , (SSA.unsafeVar 7, [SSA.unsafeVar 6])
+              ]
+          , labelKills =
+              [ (SSA.Label "then", [])
+              , (SSA.Label "else", [])
+              , (SSA.Label "after", [SSA.unsafeVar 1, SSA.unsafeVar 5])
+              ]
+          }
 
     it "let x = 1; let y = if true then x else 22; x + y" $ do
       let
@@ -121,10 +130,17 @@ spec =
       -}
 
       (mempty, expr)
-        `livenessShouldBe` [ (SSA.unsafeVar 0, [])
-                           , (SSA.unsafeVar 1, [])
-                           , (SSA.unsafeVar 2, [SSA.unsafeVar 0, SSA.unsafeVar 1])
-                           ]
+        `livenessShouldBe` (mempty :: Liveness)
+          { varKills =
+              [ (SSA.unsafeVar 0, [])
+              , (SSA.unsafeVar 2, [SSA.unsafeVar 0, SSA.unsafeVar 1])
+              ]
+          , labelKills =
+              [ (SSA.Label "then", [])
+              , (SSA.Label "else", [])
+              , (SSA.Label "after", [])
+              ]
+          }
 
     it "let x = 1; let y = 2; let z = f(y, x); x + z" $ do
       let
@@ -142,8 +158,11 @@ spec =
       -}
 
       ([("f", Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64)], expr)
-        `livenessShouldBe` [ (SSA.unsafeVar 0, [])
-                           , (SSA.unsafeVar 1, [])
-                           , (SSA.unsafeVar 2, [SSA.unsafeVar 1])
-                           , (SSA.unsafeVar 3, [SSA.unsafeVar 0, SSA.unsafeVar 2])
-                           ]
+        `livenessShouldBe` (mempty :: Liveness)
+          { varKills =
+              [ (SSA.unsafeVar 0, [])
+              , (SSA.unsafeVar 1, [])
+              , (SSA.unsafeVar 2, [SSA.unsafeVar 1])
+              , (SSA.unsafeVar 3, [SSA.unsafeVar 0, SSA.unsafeVar 2])
+              ]
+          }

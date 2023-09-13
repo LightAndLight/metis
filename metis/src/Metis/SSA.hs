@@ -48,6 +48,7 @@ import qualified Data.DList as DList
 import qualified Data.Either as Either
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
+import Data.Hashable (Hashable)
 import Data.Int (Int64)
 import Data.Text (Text)
 import Data.Traversable (for)
@@ -117,7 +118,7 @@ data Terminator
   deriving (Eq, Show)
 
 newtype Label = Label {value :: Text}
-  deriving (Eq, Show)
+  deriving (Eq, Show, Hashable)
 
 data Block = Block
   { name :: Text
