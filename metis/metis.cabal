@@ -44,6 +44,7 @@ library
         Metis.Kind
         Metis.Literal
         Metis.Liveness
+        Metis.LivenessNew
         Metis.Log
         Metis.RegisterAllocation
         Metis.SSA
@@ -96,6 +97,7 @@ test-suite metis-test
         Test.CoreToAsmNew
         Test.InstSelection
         Test.Liveness
+        Test.LivenessNew
         Test.RegisterAllocation
         Test.SSA
         Test.SimplifyAsm

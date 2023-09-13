@@ -7,6 +7,7 @@ import qualified Test.CoreToAsmNew
 import Test.Hspec (hspec)
 import qualified Test.InstSelection
 import qualified Test.Liveness
+import qualified Test.LivenessNew
 import qualified Test.RegisterAllocation
 import qualified Test.SSA
 import qualified Test.SimplifyAsm
@@ -20,6 +21,7 @@ main =
     Test.CoreToAsmNew.spec
     Test.InstSelection.spec
     Test.Liveness.spec
+    Test.LivenessNew.spec
     Test.RegisterAllocation.spec
     Test.SSA.spec
     Test.SimplifyAsm.spec
