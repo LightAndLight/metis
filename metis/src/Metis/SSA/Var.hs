@@ -20,6 +20,7 @@ import Control.Monad.Trans.Class (MonadTrans, lift)
 import qualified Control.Monad.Writer.CPS
 import Data.Hashable (Hashable (..))
 import Data.Word (Word64)
+import Metis.Log (MonadLog)
 
 newtype Var = Var {value :: Word64}
   deriving (Eq, Hashable, Show)
@@ -48,3 +49,5 @@ instance (Monad m) => MonadVar (VarT m) where
       n <- get
       put $ n + 1
       pure $ Var n
+
+instance (MonadLog m) => MonadLog (VarT m)

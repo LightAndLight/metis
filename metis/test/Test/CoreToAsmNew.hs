@@ -13,6 +13,7 @@ import Data.CallStack (HasCallStack)
 import Data.Foldable (traverse_)
 import qualified Data.HashMap.Strict as HashMap
 import Data.Sequence (Seq)
+import qualified Data.Text as Text
 import qualified Data.Text.Lazy as Lazy (Text)
 import qualified Data.Text.Lazy as Text.Lazy
 import qualified Data.Text.Lazy.Builder as Builder
@@ -35,6 +36,7 @@ import Metis.IsaNew.X86_64 (Register (..), X86_64, allocRegisters_X86_64, instSe
 import qualified Metis.Literal as Literal
 import Metis.LivenessNew (livenessBlocks, runLivenessT)
 import Metis.Log (handleLogging)
+import qualified Metis.Log as Log
 import Metis.RegisterAllocation (
   AllocRegistersEnv (..),
   AllocRegistersState (..),
@@ -62,7 +64,7 @@ spec =
                 let nameTypes = [("f", Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64)]
 
                 (liveness, instsVirtual, instSelState) <-
-                  runVarT $ do
+                  handleLogging tempFileHandle . runVarT $ do
                     (varTypes, ssa) <-
                       SSA.toBlocks
                         SSA.FromCoreEnv{nameTypes = (nameTypes HashMap.!)}
@@ -82,6 +84,8 @@ spec =
                             , varTys = (varTypes HashMap.!)
                             }
                         $ traverse (instSelectionBlock instSelection_X86_64) ssa
+
+                    Log.trace . Text.pack $ "instsVirtual: " <> show instsVirtual
 
                     pure (liveness, instsVirtual, instSelState)
 

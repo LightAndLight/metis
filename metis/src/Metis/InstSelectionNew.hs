@@ -163,6 +163,8 @@ data Block isa var = Block
   , instructions :: [Instruction isa var]
   }
 
+deriving instance (Isa isa, Show var) => Show (Block isa var)
+
 instSelectionBlock :: (MonadState InstSelState m) => InstSelection isa m -> SSA.Block -> m (Block isa (Var isa))
 instSelectionBlock InstSelection{selectInstruction, selectTerminator} SSA.Block{name, params = _params, instructions, terminator} = do
   instructions' <- execWriterT $ do
