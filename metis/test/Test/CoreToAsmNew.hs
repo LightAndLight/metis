@@ -86,7 +86,8 @@ spec =
                     pure (liveness, instsVirtual, instSelState)
 
                 instsPhysical <-
-                  flip evalStateT initialAllocRegistersState{stackFrameTop = instSelState.stackFrameTop}
+                  handleLogging tempFileHandle
+                    . flip evalStateT initialAllocRegistersState{stackFrameTop = instSelState.stackFrameTop}
                     . flip runReaderT AllocRegistersEnv{liveness}
                     $ traverse
                       ( \block ->
@@ -193,7 +194,8 @@ spec =
                     pure (liveness, instsVirtual, instSelState)
 
                 instsPhysical <-
-                  flip evalStateT initialAllocRegistersState{stackFrameTop = instSelState.stackFrameTop, freeRegisters = available}
+                  handleLogging tempFileHandle
+                    . flip evalStateT initialAllocRegistersState{stackFrameTop = instSelState.stackFrameTop, freeRegisters = available}
                     . flip runReaderT AllocRegistersEnv{liveness}
                     $ allocRegistersFunction allocRegisters_X86_64 instsVirtual
 

@@ -44,10 +44,14 @@ import Data.Kind (Type)
 import qualified Data.Maybe as Maybe
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
+import qualified Data.Text as Text
 import Data.Word (Word64)
+import GHC.Stack (HasCallStack)
 import qualified Metis.InstSelectionNew as InstSelection
 import Metis.IsaNew (Address (..), AddressBase (..), Isa (..))
 import Metis.LivenessNew (Liveness (..))
+import Metis.Log (MonadLog)
+import qualified Metis.Log as Log
 import qualified Metis.SSA.Var as SSA
 import Witherable (wither)
 
@@ -82,10 +86,12 @@ data Location :: Type -> Type where
 deriving instance (Isa isa) => Show (Location isa)
 
 getRegister ::
+  (HasCallStack) =>
   ( Isa isa
   , MonadReader AllocRegistersEnv m
   , MonadState (AllocRegistersState isa) m
   , MonadWriter (DList (Instruction isa (Register isa))) m
+  , MonadLog m
   ) =>
   AllocRegisters isa ->
   SSA.Var ->
@@ -96,7 +102,7 @@ getRegister dict@AllocRegisters{load} var conflicts = do
     gets
       ( \s ->
           Maybe.fromMaybe
-            (error $ "virtual " <> show var <> " missing from map")
+            (error $ show var <> " missing from map: " <> show s.locations)
             (HashMap.lookup var s.locations)
       )
   case location of
@@ -195,11 +201,13 @@ assignRegister ::
   ( Isa isa
   , MonadReader AllocRegistersEnv m
   , MonadState (AllocRegistersState isa) m
+  , MonadLog m
   ) =>
   SSA.Var ->
   Register isa ->
   m ()
 assignRegister var reg = do
+  Log.trace . Text.pack $ "assigning " <> show var <> " to " <> show reg
   setOccupied reg var
   setPhysical var reg
 
@@ -295,6 +303,7 @@ allocRegistersVar ::
   , MonadReader AllocRegistersEnv m
   , MonadState (AllocRegistersState isa) m
   , MonadWriter (DList (Instruction isa (Register isa))) m
+  , MonadLog m
   ) =>
   AllocRegisters isa ->
   VarInfo (InstSelection.Var isa) ->
@@ -351,6 +360,7 @@ allocRegisters1 ::
   ( Isa isa
   , MonadReader AllocRegistersEnv m
   , MonadState (AllocRegistersState isa) m
+  , MonadLog m
   ) =>
   AllocRegisters isa ->
   Instruction isa (InstSelection.Var isa) ->
@@ -369,6 +379,7 @@ allocRegisters ::
   ( Isa isa
   , MonadReader AllocRegistersEnv m
   , MonadState (AllocRegistersState isa) m
+  , MonadLog m
   ) =>
   AllocRegisters isa ->
   [Instruction isa (InstSelection.Var isa)] ->
@@ -380,6 +391,7 @@ allocRegistersBlock ::
   ( Isa isa
   , MonadReader AllocRegistersEnv m
   , MonadState (AllocRegistersState isa) m
+  , MonadLog m
   ) =>
   AllocRegisters isa ->
   InstSelection.Block isa (InstSelection.Var isa) ->
@@ -392,6 +404,7 @@ allocRegistersFunction ::
   ( Isa isa
   , MonadReader AllocRegistersEnv m
   , MonadState (AllocRegistersState isa) m
+  , MonadLog m
   ) =>
   AllocRegisters isa ->
   InstSelection.Function isa (InstSelection.Var isa) ->

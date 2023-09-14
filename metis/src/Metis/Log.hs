@@ -1,7 +1,9 @@
+{-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 module Metis.Log (
@@ -19,6 +21,7 @@ import Control.Monad.Reader.Class (ask)
 import qualified Control.Monad.State.Lazy
 import qualified Control.Monad.State.Strict
 import Control.Monad.Trans.Class (MonadTrans, lift)
+import qualified Control.Monad.Writer.CPS
 import Data.Text (Text)
 import qualified Data.Text.IO as Text.IO
 import qualified Metis.Asm.Class
@@ -27,15 +30,16 @@ import System.IO (Handle)
 
 class (Monad m) => MonadLog m where
   trace :: Text -> m ()
-
-instance (MonadLog m) => MonadLog (Control.Monad.State.Strict.StateT s m) where
+  default trace :: (m ~ t n, MonadTrans t, MonadLog n) => Text -> m ()
   trace = lift . trace
 
-instance (MonadLog m) => MonadLog (Control.Monad.State.Lazy.StateT s m) where
-  trace = lift . trace
+instance (MonadLog m) => MonadLog (Control.Monad.State.Strict.StateT s m)
 
-instance (MonadLog m) => MonadLog (Control.Monad.Reader.ReaderT r m) where
-  trace = lift . trace
+instance (MonadLog m) => MonadLog (Control.Monad.State.Lazy.StateT s m)
+
+instance (MonadLog m) => MonadLog (Control.Monad.Reader.ReaderT r m)
+
+instance (MonadLog m) => MonadLog (Control.Monad.Writer.CPS.WriterT r m)
 
 newtype HandleLoggingT m a = HandleLoggingT {value :: ReaderT Handle m a}
   deriving (Functor, Applicative, Monad, MonadFix)
