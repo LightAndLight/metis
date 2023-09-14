@@ -1,6 +1,10 @@
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE RecursiveDo #-}
 
 module Metis.LivenessNew (
+  LivenessT,
+  runLivenessT,
   Liveness (..),
   livenessBlocks,
   livenessBlock,
@@ -9,6 +13,12 @@ module Metis.LivenessNew (
   livenessTerminator,
 ) where
 
+import Control.Monad.Fix (MonadFix)
+import Control.Monad.Reader (ReaderT, runReaderT)
+import Control.Monad.Reader.Class (MonadReader, ask)
+import Control.Monad.Trans.Writer.CPS (runWriterT)
+import Control.Monad.Writer.CPS (WriterT)
+import Control.Monad.Writer.Class (tell)
 import Data.Buildable (collectL')
 import Data.Foldable (fold)
 import qualified Data.HashMap.Lazy as HashMap.Lazy
@@ -43,107 +53,138 @@ instance Semigroup Liveness where
 instance Monoid Liveness where
   mempty = Liveness{varKills = mempty, labelKills = mempty}
 
+tellVarKills :: (Monad m) => Var -> HashSet Var -> LivenessT m ()
+tellVarKills var vars =
+  LivenessT $
+    tell
+      ( mempty
+      , mempty
+          { varKills = if HashSet.null vars then mempty else HashMap.singleton var vars
+          }
+      )
+
+tellLabelKills :: (Monad m) => Label -> HashSet Var -> LivenessT m ()
+tellLabelKills label vars =
+  LivenessT $
+    tell
+      ( mempty
+      , mempty
+          { labelKills = if HashSet.null vars then mempty else HashMap.singleton label vars
+          }
+      )
+
+tellUsedAfterLabel :: (Monad m) => Label -> HashSet Var -> LivenessT m ()
+tellUsedAfterLabel label vars =
+  LivenessT $ tell (HashMap.Lazy.singleton label vars, mempty)
+
 livenessInstruction ::
+  (Monad m) =>
   HashSet Var ->
   Instruction ->
-  (HashSet Var, Liveness)
+  LivenessT m (HashSet Var)
 livenessInstruction usedAfter inst =
   case inst of
-    LetS var _ value ->
+    LetS var _ value -> do
       let valueVars = varsSimple value
           usedBefore = HashSet.delete var usedAfter <> valueVars
           varKills = valueVars `HashSet.difference` usedAfter
-       in ( usedBefore
-          , Liveness
-              { varKills = if HashSet.null varKills then mempty else HashMap.singleton var varKills
-              , labelKills = mempty
-              }
-          )
-    LetC var _ value ->
+
+      tellVarKills var varKills
+
+      pure usedBefore
+    LetC var _ value -> do
       let valueVars = varsCompound value
           usedBefore = HashSet.delete var usedAfter <> valueVars
+
           varKills = valueVars `HashSet.difference` usedAfter
-       in ( usedBefore
-          , Liveness
-              { varKills = if HashSet.null varKills then mempty else HashMap.singleton var varKills
-              , labelKills = mempty
-              }
-          )
+
+      tellVarKills var varKills
+
+      pure usedBefore
 
 livenessTerminator ::
-  HashMap Label (HashSet Var) ->
+  (Monad m) =>
   Terminator ->
-  (HashSet Var, Liveness)
-livenessTerminator labelUsedAfter term =
+  LivenessT m (HashSet Var)
+livenessTerminator term =
   case term of
-    Return value ->
+    Return value -> do
       let usedBefore = varsSimple value
-       in (usedBefore, mempty)
-    IfThenElse cond a b ->
+      pure usedBefore
+    IfThenElse cond a b -> do
+      usedAfterLabel <- ask
+
       let vars = varsSimple cond
-          aUsedAfter = fold $ HashMap.lookup a labelUsedAfter
-          bUsedAfter = fold $ HashMap.lookup b labelUsedAfter
+          aUsedAfter = fold $ HashMap.lookup a usedAfterLabel
+          bUsedAfter = fold $ HashMap.lookup b usedAfterLabel
           abUsedAfter = aUsedAfter <> bUsedAfter
           usedBefore = abUsedAfter <> vars
           labelKills = vars `HashSet.difference` abUsedAfter
-       in ( usedBefore
-          , mempty
-              { labelKills = if HashSet.null labelKills then mempty else HashMap.fromList [(a, labelKills), (b, labelKills)]
-              }
-          )
-    Jump label arg ->
+
+      tellLabelKills a labelKills
+      tellLabelKills b labelKills
+
+      pure usedBefore
+    Jump label arg -> do
+      usedAfterLabel <- ask
+
       let vars = varsSimple arg
-          usedAfter = fold $ HashMap.lookup label labelUsedAfter
+          usedAfter = fold $ HashMap.lookup label usedAfterLabel
           usedBefore = usedAfter <> vars
           labelKills = vars `HashSet.difference` usedAfter
-       in ( usedBefore
-          , Liveness
-              { varKills = mempty
-              , labelKills = if HashSet.null labelKills then mempty else HashMap.singleton label labelKills
-              }
-          )
+
+      tellLabelKills label labelKills
+
+      pure usedBefore
 
 livenessInstructions ::
+  (Monad m) =>
   HashSet Var ->
   [Instruction] ->
-  (HashSet Var, Liveness)
+  LivenessT m (HashSet Var)
 livenessInstructions usedAfter insts =
   case insts of
     [] ->
-      (usedAfter, mempty)
-    inst : insts' ->
-      let
-        (usedBefore, liveness) = livenessInstructions usedAfter insts'
-        (usedBefore', liveness') = livenessInstruction usedBefore inst
-       in
-        (usedBefore', liveness <> liveness')
+      pure usedAfter
+    inst : insts' -> do
+      usedBefore <- livenessInstructions usedAfter insts'
+      livenessInstruction usedBefore inst
 
 livenessBlock ::
-  HashMap Label (HashSet Var) ->
+  (Monad m) =>
   Block ->
-  (HashMap Label (HashSet Var), HashSet Var, Liveness)
-livenessBlock labelUsedAfter block =
-  let
-    (usedBefore, liveness) = livenessTerminator labelUsedAfter block.terminator
-    (usedBefore', liveness') = livenessInstructions usedBefore block.instructions
-   in
-    ( HashMap.Lazy.singleton (Label block.name) usedBefore'
-    , usedBefore'
-    , liveness <> liveness'
-    )
+  LivenessT m (HashSet Var)
+livenessBlock block = do
+  usedBefore <- livenessTerminator block.terminator
+  usedBefore' <- livenessInstructions usedBefore block.instructions
+  tellUsedAfterLabel (Label block.name) usedBefore'
+  pure usedBefore'
 
 livenessBlocks ::
-  HashMap Label (HashSet Var) ->
+  (Monad m) =>
   [Block] ->
-  (HashMap Label (HashSet Var), HashSet Var, Liveness)
-livenessBlocks finalLabelUsedAfter blocks =
+  LivenessT m (HashSet Var)
+livenessBlocks blocks =
   case blocks of
     [] ->
-      mempty
-    block : blocks' ->
-      let (labelUsedAfter, _usedBefore, liveness) = livenessBlocks finalLabelUsedAfter blocks'
-          (labelUsedAfter', usedBefore', liveness') = livenessBlock finalLabelUsedAfter block
-       in (labelUsedAfter <> labelUsedAfter', usedBefore', liveness <> liveness')
+      pure mempty
+    block : blocks' -> do
+      _usedBefore <- livenessBlocks blocks'
+      livenessBlock block
+
+newtype LivenessT m a
+  = LivenessT
+      ( ReaderT
+          (HashMap Label (HashSet Var))
+          (WriterT (HashMap Label (HashSet Var), Liveness) m)
+          a
+      )
+  deriving (Functor, Applicative, Monad, MonadReader (HashMap Label (HashSet Var)))
+
+runLivenessT :: (MonadFix m) => LivenessT m a -> m (Liveness, a)
+runLivenessT (LivenessT ma) = do
+  rec (a, (labelUsedAfterFinal, liveness)) <- runWriterT $ runReaderT ma labelUsedAfterFinal
+  pure (liveness, a)
 
 varsType :: Type Var -> HashSet Var
 varsType = collectL'

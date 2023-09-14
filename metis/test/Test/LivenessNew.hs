@@ -11,7 +11,7 @@ import Data.Text (Text)
 import Data.Void (Void, absurd)
 import Metis.Core (Expr (..))
 import qualified Metis.Literal as Literal
-import Metis.LivenessNew (Liveness (..), livenessBlocks)
+import Metis.LivenessNew (Liveness (..), livenessBlocks, runLivenessT)
 import qualified Metis.SSA as SSA
 import Metis.SSA.Var (runVarT)
 import qualified Metis.SSA.Var as SSA (unsafeVar)
@@ -28,7 +28,7 @@ spec =
         (_varTypes, ssa) <-
           runVarT . SSA.toBlocks SSA.FromCoreEnv{nameTypes = (nameTypes HashMap.!)} $
             SSA.fromCoreExpr absurd absurd expr
-        let (labelUsedAfter, _, liveness) = livenessBlocks labelUsedAfter ssa
+        (liveness, _) <- runLivenessT $ livenessBlocks ssa
 
         liveness `shouldBe` expectation
 
