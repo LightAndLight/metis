@@ -47,11 +47,12 @@ import qualified Data.Sequence as Seq
 import Data.Word (Word64)
 import qualified Metis.InstSelectionNew as InstSelection
 import Metis.IsaNew (Address (..), AddressBase (..), Isa (..))
+import Metis.LivenessNew (Liveness (..))
 import qualified Metis.SSA.Var as SSA
 import Witherable (wither)
 
 data AllocRegistersEnv = AllocRegistersEnv
-  { kills :: HashMap SSA.Var (HashSet SSA.Var)
+  { liveness :: Liveness
   }
 
 data AllocRegistersState isa = AllocRegistersState
@@ -225,7 +226,7 @@ getKilledBy ::
   SSA.Var ->
   m (HashSet SSA.Var)
 getKilledBy var =
-  asks (Maybe.fromMaybe mempty . HashMap.lookup var . (.kills))
+  asks (Maybe.fromMaybe mempty . HashMap.lookup var . (.varKills) . (.liveness))
 
 freeVars ::
   ( Isa isa

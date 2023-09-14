@@ -23,6 +23,7 @@ import Metis.IsaNew (
   Isa (..),
   generalPurposeRegisters,
  )
+import Metis.LivenessNew (Liveness (..))
 import Metis.RegisterAllocation (
   AllocRegisters (..),
   AllocRegistersEnv (..),
@@ -133,16 +134,20 @@ spec =
             . flip
               runReaderT
               AllocRegistersEnv
-                { kills =
-                    HashMap.fromList
-                      [ (SSA.unsafeVar 0, mempty)
-                      , (SSA.unsafeVar 1, mempty)
-                      , (SSA.unsafeVar 2, HashSet.fromList [SSA.unsafeVar 0, SSA.unsafeVar 1])
-                      , (SSA.unsafeVar 3, mempty)
-                      , (SSA.unsafeVar 4, mempty)
-                      , (SSA.unsafeVar 5, HashSet.fromList [SSA.unsafeVar 3, SSA.unsafeVar 4])
-                      , (SSA.unsafeVar 6, HashSet.fromList [SSA.unsafeVar 2, SSA.unsafeVar 5])
-                      ]
+                { liveness =
+                    Liveness
+                      { varKills =
+                          HashMap.fromList
+                            [ (SSA.unsafeVar 0, mempty)
+                            , (SSA.unsafeVar 1, mempty)
+                            , (SSA.unsafeVar 2, HashSet.fromList [SSA.unsafeVar 0, SSA.unsafeVar 1])
+                            , (SSA.unsafeVar 3, mempty)
+                            , (SSA.unsafeVar 4, mempty)
+                            , (SSA.unsafeVar 5, HashSet.fromList [SSA.unsafeVar 3, SSA.unsafeVar 4])
+                            , (SSA.unsafeVar 6, HashSet.fromList [SSA.unsafeVar 2, SSA.unsafeVar 5])
+                            ]
+                      , labelKills = mempty
+                      }
                 }
             $ allocRegisters allocRegistersMockIsa input
       result
@@ -180,16 +185,20 @@ spec =
             . flip
               runReaderT
               AllocRegistersEnv
-                { kills =
-                    HashMap.fromList
-                      [ (SSA.unsafeVar 0, mempty)
-                      , (SSA.unsafeVar 1, mempty)
-                      , (SSA.unsafeVar 2, HashSet.fromList [SSA.unsafeVar 0, SSA.unsafeVar 1])
-                      , (SSA.unsafeVar 3, mempty)
-                      , (SSA.unsafeVar 4, mempty)
-                      , (SSA.unsafeVar 5, HashSet.fromList [SSA.unsafeVar 3, SSA.unsafeVar 4])
-                      , (SSA.unsafeVar 6, HashSet.fromList [SSA.unsafeVar 2, SSA.unsafeVar 5])
-                      ]
+                { liveness =
+                    Liveness
+                      { varKills =
+                          HashMap.fromList
+                            [ (SSA.unsafeVar 0, mempty)
+                            , (SSA.unsafeVar 1, mempty)
+                            , (SSA.unsafeVar 2, HashSet.fromList [SSA.unsafeVar 0, SSA.unsafeVar 1])
+                            , (SSA.unsafeVar 3, mempty)
+                            , (SSA.unsafeVar 4, mempty)
+                            , (SSA.unsafeVar 5, HashSet.fromList [SSA.unsafeVar 3, SSA.unsafeVar 4])
+                            , (SSA.unsafeVar 6, HashSet.fromList [SSA.unsafeVar 2, SSA.unsafeVar 5])
+                            ]
+                      , labelKills = mempty
+                      }
                 }
             $ allocRegisters allocRegistersMockIsa input
       result

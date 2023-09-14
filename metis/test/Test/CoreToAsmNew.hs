@@ -33,6 +33,7 @@ import qualified Metis.InstSelectionNew as InstSelectionNew
 import Metis.IsaNew (Register, generalPurposeRegisters, printRegister)
 import Metis.IsaNew.X86_64 (Register (..), X86_64, allocRegisters_X86_64, instSelection_X86_64, printInstruction_X86_64)
 import qualified Metis.Literal as Literal
+import Metis.LivenessNew (livenessBlocks, runLivenessT)
 import Metis.Log (handleLogging)
 import Metis.RegisterAllocation (
   AllocRegistersEnv (..),
@@ -69,7 +70,7 @@ spec =
 
                     let ssaNameTypes = [("f", Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64)]
 
-                    let liveness = error "TODO: liveness for SSA"
+                    (liveness, _) <- runLivenessT $ livenessBlocks ssa
 
                     (instsVirtual, instSelState) <-
                       flip runStateT initialInstSelState
@@ -86,7 +87,7 @@ spec =
 
                 instsPhysical <-
                   flip evalStateT initialAllocRegistersState{stackFrameTop = instSelState.stackFrameTop}
-                    . flip runReaderT AllocRegistersEnv{kills = liveness}
+                    . flip runReaderT AllocRegistersEnv{liveness}
                     $ traverse
                       ( \block ->
                           (\instructions' -> block{InstSelectionNew.instructions = instructions'})
@@ -193,7 +194,7 @@ spec =
 
                 instsPhysical <-
                   flip evalStateT initialAllocRegistersState{stackFrameTop = instSelState.stackFrameTop, freeRegisters = available}
-                    . flip runReaderT AllocRegistersEnv{kills = liveness}
+                    . flip runReaderT AllocRegistersEnv{liveness}
                     $ allocRegistersFunction allocRegisters_X86_64 instsVirtual
 
                 asm <-
