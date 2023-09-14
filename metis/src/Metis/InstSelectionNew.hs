@@ -136,7 +136,7 @@ instSelectionArgs dict@InstSelection{move} inputRegisters args argTys =
             Seq.EmptyL ->
               error "TODO: instSelectionArgs/Register/EmptyL"
             reg Seq.:< inputRegisters' -> do
-              tell . DList.singleton $ move (Physical (Just arg) reg) (Virtual arg)
+              tell . DList.singleton $ move (Physical Nothing reg) (Virtual arg)
               instSelectionArgs dict inputRegisters' args' argTys'
         Type.Composite{} ->
           error "TODO: instSelectionArgs/Composite"

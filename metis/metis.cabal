@@ -120,6 +120,7 @@ test-suite metis-test
         process,
         temporary,
         text,
+        transformers,
         unordered-containers,
 
         -- better test failure behaviours 

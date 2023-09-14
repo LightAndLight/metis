@@ -27,7 +27,7 @@ module Metis.RegisterAllocation (
 ) where
 
 import Control.Lens.Cons (uncons)
-import Control.Monad ((<=<))
+import Control.Monad (unless, when, (<=<))
 import Control.Monad.Reader.Class (MonadReader, asks)
 import Control.Monad.State.Class (MonadState, gets, modify)
 import Control.Monad.Trans.Writer.CPS (runWriterT)
@@ -35,6 +35,7 @@ import Control.Monad.Writer.Class (MonadWriter, tell)
 import Data.DList (DList)
 import qualified Data.DList as DList
 import Data.Foldable (for_)
+import Data.Functor (void)
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 import Data.HashSet (HashSet)
@@ -53,7 +54,7 @@ import Metis.LivenessNew (Liveness (..))
 import Metis.Log (MonadLog)
 import qualified Metis.Log as Log
 import qualified Metis.SSA.Var as SSA
-import Witherable (wither)
+import Witherable (mapMaybe, wither)
 
 data AllocRegistersEnv = AllocRegistersEnv
   { liveness :: Liveness
@@ -111,8 +112,9 @@ getRegister dict@AllocRegisters{load} var conflicts = do
       assignRegister var reg
       tell . DList.singleton $ load reg mem
       pure reg
-    NotSpilled p ->
-      pure p
+    NotSpilled reg -> do
+      Log.trace . Text.pack $ show var <> " is assigned to " <> show reg
+      pure reg
 
 setPhysical ::
   (Isa isa, MonadReader AllocRegistersEnv m, MonadState (AllocRegistersState isa) m) =>
@@ -284,9 +286,12 @@ freeVar var = do
             )
 
 data AllocRegisters isa = AllocRegisters
-  { instructionVarInfo :: forall var. Instruction isa var -> Instruction isa (VarInfo var)
+  { traverseVars :: forall var var' m. (Applicative m) => (var -> m var') -> Instruction isa var -> m (Instruction isa var')
+  -- ^ A function that visits every variable in an instruction. Must visit variable "uses" before "defs".
+  , instructionVarInfo :: forall var. Instruction isa var -> Instruction isa (VarInfo var)
   , load :: forall var. var -> Address var -> Instruction isa var
   , store :: forall var. Address var -> var -> Instruction isa var
+  , move :: forall var. var -> var -> Instruction isa var
   }
 
 data VarInfo var
@@ -296,6 +301,16 @@ data Usage var
   = Use [var]
   | DefReuse var
   | DefNew
+
+selectRegister :: (Eq a) => a -> Seq a -> Maybe (a, Seq a)
+selectRegister physical available = do
+  index <- Seq.findIndexL (== physical) available
+  let (prefix, suffix) = Seq.splitAt index available
+  case Seq.viewl suffix of
+    Seq.EmptyL ->
+      Nothing
+    register Seq.:< registers ->
+      Just (register, prefix <> registers)
 
 allocRegistersVar ::
   forall isa m.
@@ -308,25 +323,60 @@ allocRegistersVar ::
   AllocRegisters isa ->
   VarInfo (InstSelection.Var isa) ->
   m (Register isa)
-allocRegistersVar dict (VarInfo info var) =
+allocRegistersVar dict@AllocRegisters{move, load} (VarInfo info var) =
   case var of
-    InstSelection.Physical mVirtual physical -> do
-      for_ mVirtual $ freeVars <=< getKilledBy
-      dest <-
-        allocateRegister
-          dict
-          ( \available -> do
-              index <- Seq.findIndexL (== physical) available
-              let (prefix, suffix) = Seq.splitAt index available
-              case Seq.viewl suffix of
-                Seq.EmptyL ->
-                  Nothing
-                register Seq.:< registers ->
-                  Just (register, prefix <> registers)
-          )
-          []
-      for_ mVirtual $ \virtual -> assignRegister virtual dest
-      pure dest
+    InstSelection.Physical mVirtual physical ->
+      case info of
+        Use conflicts -> do
+          locations <- gets (.locations)
+          when
+            ( physical
+                `elem` mapMaybe
+                  ( \case
+                      InstSelection.Physical _ p -> Just p
+                      InstSelection.Virtual v -> do
+                        location <- HashMap.lookup v locations
+                        case location of
+                          Spilled{} ->
+                            Nothing
+                          NotSpilled reg ->
+                            pure reg
+                  )
+                  conflicts
+            )
+            (error "register conflict")
+
+          case mVirtual of
+            Nothing ->
+              void $ allocateRegister dict (selectRegister physical) conflicts
+            Just virtual -> do
+              case HashMap.lookup virtual locations of
+                Nothing -> do
+                  dest <- allocateRegister dict (selectRegister physical) conflicts
+                  assignRegister virtual dest
+                Just location ->
+                  case location of
+                    Spilled address _ -> do
+                      dest <- allocateRegister dict (selectRegister physical) conflicts
+                      freeVar virtual
+                      tell . DList.singleton $ load dest address
+                      assignRegister virtual dest
+                    NotSpilled src ->
+                      unless (src == physical) $ do
+                        dest <- allocateRegister dict (selectRegister physical) conflicts
+                        freeVar virtual
+                        tell . DList.singleton $ move dest src
+                        assignRegister virtual dest
+
+          pure physical
+        DefNew -> do
+          for_ mVirtual $ freeVars <=< getKilledBy
+
+          occupiedRegisters <- gets (.occupiedRegisters)
+
+          pure physical
+        DefReuse src ->
+          error "TODO: allocRegistersVar/Physical/DefReuse" src
     InstSelection.Virtual virtual ->
       case info of
         Use conflicts ->
@@ -365,13 +415,11 @@ allocRegisters1 ::
   AllocRegisters isa ->
   Instruction isa (InstSelection.Var isa) ->
   m [Instruction isa (Register isa)]
-allocRegisters1 dict@AllocRegisters{instructionVarInfo} inst = do
+allocRegisters1 dict@AllocRegisters{traverseVars, instructionVarInfo} inst = do
+  Log.trace . Text.pack $ "allocRegisters1: " <> show inst
   (lastInst, insts) <-
     runWriterT
-      -- Is it okay to traverse "defs" before "uses"?
-      -- When writing instructions in Intel style, the destination goes before the sources. This
-      -- means it's traversed before the sources.
-      . traverse (allocRegistersVar dict)
+      . traverseVars (allocRegistersVar dict)
       $ instructionVarInfo inst
   pure . DList.toList $ insts <> DList.singleton lastInst
 

@@ -18,6 +18,7 @@ module Metis.IsaNew.X86_64 (
   printInstruction_X86_64,
 ) where
 
+import Control.Applicative.Backwards (Backwards (..))
 import Control.Monad.Reader.Class (MonadReader, asks)
 import Control.Monad.State.Class (MonadState)
 import Control.Monad.Writer.CPS (execWriterT)
@@ -163,9 +164,11 @@ instance Hashable (Register X86_64)
 allocRegisters_X86_64 :: AllocRegisters X86_64
 allocRegisters_X86_64 =
   AllocRegisters
-    { instructionVarInfo
+    { traverseVars = \f -> forwards . traverse (Backwards . f)
+    , instructionVarInfo
     , load = Mov_rm
     , store = Mov_mr
+    , move = Mov_rr
     }
   where
     instructionVarInfo ::
@@ -286,6 +289,7 @@ selectInstruction_X86_64 inst =
                   error $ "can't call literal: " <> show lit
                 SSA.Type t ->
                   error $ "can't call type: " <> show t
+              tell [Mov_rr (Virtual var) (Physical Nothing Rax)]
             t ->
               error $ "can't call non-function: " <> show t
         SSA.Alloca t -> do
@@ -316,10 +320,10 @@ selectTerminator_X86_64 term =
   fmap DList.toList . execWriterT $
     case term of
       SSA.Return value -> do
-        simpleToVar value (InstSelection.Physical Nothing Rax)
+        simpleToVar value (Physical Nothing Rax)
         tell $
           DList.fromList
-            [ Pop_r $ InstSelection.Physical Nothing Rbp
+            [ Pop_r $ Physical Nothing Rbp
             , Ret
             ]
       SSA.IfThenElse cond a b -> do

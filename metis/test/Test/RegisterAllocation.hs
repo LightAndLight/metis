@@ -8,6 +8,7 @@
 
 module Test.RegisterAllocation (spec) where
 
+import Control.Applicative.Backwards (Backwards (..))
 import Control.Monad.Reader (runReaderT)
 import Control.Monad.State.Strict (evalStateT)
 import qualified Data.HashMap.Strict as HashMap
@@ -62,6 +63,7 @@ instance Isa MockIsa where
   data Instruction MockIsa var
     = Mov_ri var Immediate
     | Mov_rm var (Address var)
+    | Mov_rr var var
     | Mov_mi (Address var) Immediate
     | Mov_mr (Address var) var
     | Add_ri var var Immediate
@@ -73,9 +75,11 @@ instance Hashable (Register MockIsa)
 allocRegistersMockIsa :: AllocRegisters MockIsa
 allocRegistersMockIsa =
   AllocRegisters
-    { instructionVarInfo
+    { traverseVars = \f -> forwards . traverse (Backwards . f)
+    , instructionVarInfo
     , load = Mov_rm
     , store = Mov_mr
+    , move = Mov_rr
     }
   where
     instructionVarInfo ::
@@ -91,6 +95,10 @@ allocRegistersMockIsa =
           Mov_rm
             (VarInfo DefNew dest)
             (fmap (VarInfo (Use [])) src)
+        Mov_rr dest src ->
+          Mov_rr
+            (VarInfo DefNew dest)
+            (VarInfo (Use []) src)
         Mov_mi dest imm ->
           Mov_mi
             (fmap (VarInfo (Use [])) dest)

@@ -42,7 +42,6 @@ class
   ( Eq (Register isa)
   , Show (Register isa)
   , Hashable (Register isa)
-  , Traversable (Instruction isa)
   , forall var. (Eq var) => Eq (Instruction isa var)
   , forall var. (Show var) => Show (Instruction isa var)
   ) =>
