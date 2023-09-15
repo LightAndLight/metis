@@ -2,6 +2,7 @@
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE QuantifiedConstraints #-}
@@ -19,6 +20,7 @@ module Metis.IsaNew.X86_64 (
 ) where
 
 import Control.Applicative.Backwards (Backwards (..))
+import Control.Lens.Prism (prism')
 import Control.Monad.Reader.Class (MonadReader, asks)
 import Control.Monad.State.Class (MonadState)
 import Control.Monad.Writer.CPS (execWriterT)
@@ -168,7 +170,7 @@ allocRegisters_X86_64 =
     , instructionVarInfo
     , load = Mov_rm
     , store = Mov_mr
-    , move = Mov_rr
+    , move = prism' (uncurry Mov_rr) (\case Mov_rr a b -> Just (a, b); _ -> Nothing)
     }
   where
     instructionVarInfo ::

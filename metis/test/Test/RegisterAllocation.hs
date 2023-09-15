@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE QuantifiedConstraints #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
@@ -9,6 +10,7 @@
 module Test.RegisterAllocation (spec) where
 
 import Control.Applicative.Backwards (Backwards (..))
+import Control.Lens.Prism (prism')
 import Control.Monad.Reader (runReaderT)
 import Control.Monad.State.Strict (evalStateT)
 import qualified Data.HashMap.Strict as HashMap
@@ -79,7 +81,7 @@ allocRegistersMockIsa =
     , instructionVarInfo
     , load = Mov_rm
     , store = Mov_mr
-    , move = Mov_rr
+    , move = prism' (uncurry Mov_rr) (\case Mov_rr a b -> Just (a, b); _ -> Nothing)
     }
   where
     instructionVarInfo ::

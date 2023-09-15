@@ -115,6 +115,7 @@ test-suite metis-test
         foldable-buildable,
         hashable,
         hspec,
+        lens,
         metis,
         mtl,
         process,

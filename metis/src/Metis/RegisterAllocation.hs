@@ -27,15 +27,18 @@ module Metis.RegisterAllocation (
 ) where
 
 import Control.Lens.Cons (uncons)
-import Control.Monad (unless, when, (<=<))
+import Control.Lens.Fold ((^?))
+import Control.Lens.Prism (Prism')
+import Control.Lens.Review ((#))
+import Control.Monad (when, (<=<))
 import Control.Monad.Reader.Class (MonadReader, asks)
 import Control.Monad.State.Class (MonadState, gets, modify)
 import Control.Monad.Trans.Writer.CPS (runWriterT)
+import Control.Monad.Writer.CPS (execWriterT)
 import Control.Monad.Writer.Class (MonadWriter, tell)
 import Data.DList (DList)
 import qualified Data.DList as DList
 import Data.Foldable (for_)
-import Data.Functor (void)
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 import Data.HashSet (HashSet)
@@ -291,16 +294,18 @@ data AllocRegisters isa = AllocRegisters
   , instructionVarInfo :: forall var. Instruction isa var -> Instruction isa (VarInfo var)
   , load :: forall var. var -> Address var -> Instruction isa var
   , store :: forall var. Address var -> var -> Instruction isa var
-  , move :: forall var. var -> var -> Instruction isa var
+  , move :: forall var. Prism' (Instruction isa var) (var, var)
   }
 
 data VarInfo var
   = VarInfo (Usage var) var
+  deriving (Eq, Show)
 
 data Usage var
   = Use [var]
   | DefReuse var
   | DefNew
+  deriving (Eq, Show)
 
 selectRegister :: (Eq a) => a -> Seq a -> Maybe (a, Seq a)
 selectRegister physical available = do
@@ -311,6 +316,36 @@ selectRegister physical available = do
       Nothing
     register Seq.:< registers ->
       Just (register, prefix <> registers)
+
+-- | Allocate a specific register for use, relocating its contents if they are still live.
+forceAllocateRegister ::
+  ( Isa isa
+  , MonadReader AllocRegistersEnv m
+  , MonadWriter (DList (Instruction isa (Register isa))) m
+  , MonadState (AllocRegistersState isa) m
+  , MonadLog m
+  ) =>
+  AllocRegisters isa ->
+  Register isa ->
+  m ()
+forceAllocateRegister dict@AllocRegisters{move, store} destRegister = do
+  occupiedRegisters <- gets (.occupiedRegisters)
+  case HashMap.lookup destRegister occupiedRegisters of
+    Nothing -> do
+      _ <- allocateRegister dict (selectRegister destRegister) []
+      pure ()
+    Just varToRelocate -> do
+      hasFreeRegisters <- gets (not . null . (.freeRegisters))
+      if hasFreeRegisters
+        then do
+          temp <- allocateRegister dict uncons []
+          assignRegister varToRelocate temp
+          tell . DList.singleton $ move # (temp, destRegister)
+        else do
+          let size = registerSize destRegister
+          address <- allocateLocal size
+          setSpilled varToRelocate address size
+          tell . DList.singleton $ store address destRegister
 
 allocRegistersVar ::
   forall isa m.
@@ -323,9 +358,9 @@ allocRegistersVar ::
   AllocRegisters isa ->
   VarInfo (InstSelection.Var isa) ->
   m (Register isa)
-allocRegistersVar dict@AllocRegisters{move, load} (VarInfo info var) =
+allocRegistersVar dict (VarInfo info var) =
   case var of
-    InstSelection.Physical mVirtual physical ->
+    InstSelection.Physical _mVirtual physical ->
       case info of
         Use conflicts -> do
           locations <- gets (.locations)
@@ -346,35 +381,16 @@ allocRegistersVar dict@AllocRegisters{move, load} (VarInfo info var) =
             )
             (error "register conflict")
 
-          case mVirtual of
-            Nothing ->
-              void $ allocateRegister dict (selectRegister physical) conflicts
-            Just virtual -> do
-              case HashMap.lookup virtual locations of
-                Nothing -> do
-                  dest <- allocateRegister dict (selectRegister physical) conflicts
-                  assignRegister virtual dest
-                Just location ->
-                  case location of
-                    Spilled address _ -> do
-                      dest <- allocateRegister dict (selectRegister physical) conflicts
-                      freeVar virtual
-                      tell . DList.singleton $ load dest address
-                      assignRegister virtual dest
-                    NotSpilled src ->
-                      unless (src == physical) $ do
-                        dest <- allocateRegister dict (selectRegister physical) conflicts
-                        freeVar virtual
-                        tell . DList.singleton $ move dest src
-                        assignRegister virtual dest
-
           pure physical
         DefNew -> do
-          for_ mVirtual $ freeVars <=< getKilledBy
+          error "TODO: allocRegistersVar/Physical/DefNew"
+        {-
+        for_ mVirtual $ freeVars <=< getKilledBy
 
-          occupiedRegisters <- gets (.occupiedRegisters)
+        occupiedRegisters <- gets (.occupiedRegisters)
 
-          pure physical
+        pure physical
+        -}
         DefReuse src ->
           error "TODO: allocRegistersVar/Physical/DefReuse" src
     InstSelection.Virtual virtual ->
@@ -406,7 +422,7 @@ allocRegistersVar dict@AllocRegisters{move, load} (VarInfo info var) =
           assignRegister virtual reg
           pure reg
 
-allocRegisters1 ::
+allocRegistersInstruction ::
   ( Isa isa
   , MonadReader AllocRegistersEnv m
   , MonadState (AllocRegistersState isa) m
@@ -415,13 +431,65 @@ allocRegisters1 ::
   AllocRegisters isa ->
   Instruction isa (InstSelection.Var isa) ->
   m [Instruction isa (Register isa)]
-allocRegisters1 dict@AllocRegisters{traverseVars, instructionVarInfo} inst = do
-  Log.trace . Text.pack $ "allocRegisters1: " <> show inst
-  (lastInst, insts) <-
-    runWriterT
-      . traverseVars (allocRegistersVar dict)
-      $ instructionVarInfo inst
-  pure . DList.toList $ insts <> DList.singleton lastInst
+allocRegistersInstruction dict@AllocRegisters{traverseVars, instructionVarInfo, load, move} inst = do
+  Log.trace . Text.pack $ "allocRegistersInstruction: " <> show inst
+
+  case inst ^? move of
+    Just (dest, src) ->
+      case dest of
+        InstSelection.Physical mDestVar destRegister -> do
+          for_ mDestVar $ freeVars <=< getKilledBy
+
+          case src of
+            InstSelection.Physical _mSrcVar srcRegister ->
+              if srcRegister == destRegister
+                then pure []
+                else do
+                  insts <- fmap DList.toList . execWriterT $ forceAllocateRegister dict destRegister
+                  pure $ insts <> [move # (destRegister, srcRegister)]
+            InstSelection.Virtual srcVar -> do
+              locations <- gets (.locations)
+              case HashMap.lookup srcVar locations of
+                Nothing ->
+                  error $ show srcVar <> " missing from locations map"
+                Just srcLocation ->
+                  case srcLocation of
+                    Spilled srcAddress _size -> do
+                      insts <- fmap DList.toList . execWriterT $ forceAllocateRegister dict destRegister
+                      pure $ insts <> [load destRegister srcAddress]
+                    NotSpilled srcRegister ->
+                      if srcRegister == destRegister
+                        then pure []
+                        else do
+                          insts <- fmap DList.toList . execWriterT $ forceAllocateRegister dict destRegister
+                          pure $ insts <> [move # (destRegister, srcRegister)]
+        InstSelection.Virtual destVar -> do
+          freeVars =<< getKilledBy destVar
+
+          locations <- gets (.locations)
+          case HashMap.lookup destVar locations of
+            Nothing ->
+              pure ()
+            Just location ->
+              error $ "the `move` destination " <> show destVar <> " already has a location: " <> show location
+
+          case src of
+            InstSelection.Physical _mVar register -> do
+              assignRegister destVar register
+              pure []
+            InstSelection.Virtual srcVar ->
+              case HashMap.lookup destVar locations of
+                Nothing ->
+                  error $ show srcVar <> " missing from locations map"
+                Just srcLocation -> do
+                  modify (\s -> s{locations = HashMap.insert destVar srcLocation s.locations})
+                  pure []
+    Nothing -> do
+      (lastInst, insts) <-
+        runWriterT
+          . traverseVars (allocRegistersVar dict)
+          $ instructionVarInfo inst
+      pure . DList.toList $ insts <> DList.singleton lastInst
 
 allocRegisters ::
   ( Isa isa
@@ -433,7 +501,7 @@ allocRegisters ::
   [Instruction isa (InstSelection.Var isa)] ->
   m [Instruction isa (Register isa)]
 allocRegisters dict =
-  fmap concat . traverse (allocRegisters1 dict)
+  fmap concat . traverse (allocRegistersInstruction dict)
 
 allocRegistersBlock ::
   ( Isa isa
