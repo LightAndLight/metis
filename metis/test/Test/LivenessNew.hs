@@ -27,7 +27,7 @@ spec =
       livenessShouldBe (nameTypes, expr) expectation = do
         (_varTypes, ssa) <-
           runVarT . SSA.toBlocks SSA.FromCoreEnv{nameTypes = (nameTypes HashMap.!)} "main" $
-            SSA.fromCoreExpr absurd absurd expr
+            SSA.Return <$> SSA.fromCoreExpr absurd absurd expr
         (liveness, _) <- runLivenessT $ livenessBlocks ssa
 
         liveness `shouldBe` expectation

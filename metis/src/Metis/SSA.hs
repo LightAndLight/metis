@@ -469,10 +469,10 @@ toBlocks ::
   (Monad m) =>
   FromCoreEnv ->
   Text ->
-  FromCoreT m Simple ->
+  FromCoreT m Terminator ->
   m (HashMap Var (Type Var), [Block])
 toBlocks env blockName (FromCoreT ma) = do
-  (simple, s) <- flip runStateT initialFromCoreState{currentName = blockName} $ runReaderT ma env
+  (terminator, s) <- flip runStateT initialFromCoreState{currentName = blockName} $ runReaderT ma env
   pure
     ( s.varTypes
     , DList.toList $
@@ -482,6 +482,6 @@ toBlocks env blockName (FromCoreT ma) = do
             { name = s.currentName
             , params = s.currentParams
             , instructions = DList.toList s.currentInstructions
-            , terminator = Return simple
+            , terminator
             }
     )

@@ -65,11 +65,9 @@ spec =
 
                 (liveness, instsVirtual, instSelState) <-
                   handleLogging tempFileHandle . runVarT $ do
-                    (varTypes, ssa) <-
-                      SSA.toBlocks
-                        SSA.FromCoreEnv{nameTypes = (nameTypes HashMap.!)}
-                        "main"
-                        (SSA.fromCoreExpr absurd absurd expr)
+                    (varTypes, ssa) <- SSA.toBlocks SSA.FromCoreEnv{nameTypes = (nameTypes HashMap.!)} "main" $ do
+                      value <- SSA.fromCoreExpr absurd absurd expr
+                      pure $ SSA.Return value
 
                     let ssaNameTypes = [("f", Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64)]
 
