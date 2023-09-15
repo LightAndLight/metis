@@ -68,6 +68,7 @@ spec =
                     (varTypes, ssa) <-
                       SSA.toBlocks
                         SSA.FromCoreEnv{nameTypes = (nameTypes HashMap.!)}
+                        "main"
                         (SSA.fromCoreExpr absurd absurd expr)
 
                     let ssaNameTypes = [("f", Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64)]

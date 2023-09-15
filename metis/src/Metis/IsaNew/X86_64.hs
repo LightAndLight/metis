@@ -340,7 +340,7 @@ selectTerminator_X86_64 term =
         _ <- simpleAsVar arg
         tell $
           DList.fromList
-            [ Jmp_s . Symbol $ label.value
+            [ Jmp_s $ Symbol label.value
             ]
 
 simpleToVar ::

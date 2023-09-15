@@ -465,9 +465,14 @@ fromCoreFunction nameTypes function =
 newtype FromCoreT m a = FromCoreT (ReaderT FromCoreEnv (StateT FromCoreState m) a)
   deriving (Functor, Applicative, Monad, MonadFix, MonadReader FromCoreEnv, MonadState FromCoreState, MonadVar)
 
-toBlocks :: (Monad m) => FromCoreEnv -> FromCoreT m Simple -> m (HashMap Var (Type Var), [Block])
-toBlocks env (FromCoreT ma) = do
-  (simple, s) <- flip runStateT initialFromCoreState $ runReaderT ma env
+toBlocks ::
+  (Monad m) =>
+  FromCoreEnv ->
+  Text ->
+  FromCoreT m Simple ->
+  m (HashMap Var (Type Var), [Block])
+toBlocks env blockName (FromCoreT ma) = do
+  (simple, s) <- flip runStateT initialFromCoreState{currentName = blockName} $ runReaderT ma env
   pure
     ( s.varTypes
     , DList.toList $

@@ -26,7 +26,7 @@ spec =
       livenessShouldBe :: (HasCallStack) => (HashMap Text (Type Void), Expr Void Void) -> Liveness -> IO ()
       livenessShouldBe (nameTypes, expr) expectation = do
         (_varTypes, ssa) <-
-          runVarT . SSA.toBlocks SSA.FromCoreEnv{nameTypes = (nameTypes HashMap.!)} $
+          runVarT . SSA.toBlocks SSA.FromCoreEnv{nameTypes = (nameTypes HashMap.!)} "main" $
             SSA.fromCoreExpr absurd absurd expr
         (liveness, _) <- runLivenessT $ livenessBlocks ssa
 
