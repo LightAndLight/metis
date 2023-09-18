@@ -67,7 +67,7 @@ spec =
                   handleLogging tempFileHandle . runVarT $ do
                     (varTypes, ssa) <- SSA.toBlocks SSA.FromCoreEnv{nameTypes = (nameTypes HashMap.!)} "main" $ do
                       value <- SSA.fromCoreExpr absurd absurd expr
-                      pure $ SSA.Return value
+                      pure $ SSA.Jump (SSA.Label "done") value
 
                     let ssaNameTypes = [("f", Type.Fn [Type.Uint64, Type.Uint64] Type.Uint64)]
 
@@ -115,11 +115,11 @@ spec =
                 Call Type.Uint64 (Name "f") [] [Var . F $ B (), Var $ B ()]
           )
             `shouldCompileTo` [ ".text"
-                              , ".global main"
                               , "main:"
                               , "mov $1, %rax"
                               , "mov $2, %rbx"
                               , "call f"
+                              , "jmp done"
                               ]
 
         it "f : Fn (Uint64, Uint64) Uint64 |- let x = 1; let y = 2; let z = f(x, y); x + z" $
@@ -128,15 +128,68 @@ spec =
                 Let Type.Uint64 (Just "z") Type.Uint64 (Call Type.Uint64 (Name "f") [] [Var . F $ B (), Var $ B ()]) . toScope $
                   Add Type.Uint64 (Var . F . F $ B ()) (Var $ B ())
           )
+            {-
+            %0 = 1
+            %1 = 2
+            %2 = f(%0, %1)
+            %3 = %0 + %2
+
+            mov $1, %0
+            mov $2, %1
+            mov %0, %rax
+            mov %1, %rbx
+            call f
+            mov %rax, %2
+            add %2, %0
+
+            mov $1, %rax
+            mov $2, %rbx
+            ; `%0` is needed after the call, so its location (`%rax`) should be saved to memory
+            ; across the call. Should this be done during register allocation? If it was, then the
+            ; register allocator could skip saving `%0` if it was already a memory location.
+            ;
+            ; But how does the register allocator know that the call clobbers `%rax`?
+            ;
+            ; LLVM associates this info with the `call` instruction. See
+            ; [RegMask](https://llvm.org/doxygen/classllvm_1_1MachineOperand.html#a4c01d756ca363aef75429d61d21c0c14)
+            mov %rax, -8(%rbp)
+            call f
+            mov -8(%rbp), %rbx
+            add %rax, %rbx
+            -}
+
+            {-
+            Are things any different with linear SSA?
+
+            %0 = 1
+            %1 = 2
+            %2 = copy(%0)
+            %3 = f(%0, %1)
+            %4 = %2 + %3
+
+            mov $1, %0
+            mov $2, %1
+            mov %0, %2
+            mov %0, %rax
+            mov %1, %rbx
+            call f
+            mov %rax, %3
+            add %2, %3
+
+            mov $1, %rax
+            mov $2, %rbx
+            mov %rax, %rcx
+            call f
+            -}
             `shouldCompileTo` [ ".text"
-                              , ".global main"
                               , "main:"
                               , "mov $1, %rax"
                               , "mov $2, %rbx"
                               , "push %rax"
                               , "call f"
-                              , -- move result out of the way
-                                -- `%rbx` is killed by the call, so is the next candidate
+                              , -- Move result out of the way so that `rax` can have its value restored.
+                                -- `rax` is the only register in use after the call, so `rbx` is the
+                                -- next candidate for allocation.
                                 "mov %rax, %rbx"
                               , "pop %rax"
                               , "add %rbx, %rax"
