@@ -54,8 +54,19 @@ library
         hashable,
         indexed-traversable,
         lens,
-        llvm-hs,
-        llvm-hs-pure,
+        -- `llvm-hs` is TOO HARD to compile. First I ran intro trouble compiling it with GHC9,
+        -- then when I found a GHC version it could work with, I got C compile errors (despite
+        -- seeming to have provided the correct LLVM C library versions).
+        --
+        -- So I'm working around this by using `llvm-hs-pure` and `llvm-hs-pretty` and calling out
+        -- to `llc` to produce binaries.
+        --
+        -- Also, I'd like to use a newer version of LLVM but `llvm-hs[-pure|-pretty]` hasn't kept
+        -- up. In particular, the opaque pointer changes in LLVM15 have caused a lot of breaking
+        -- changes.
+        --
+        -- llvm-hs >= 9 && < 10,
+        llvm-hs-pure >= 9 && < 10,
         mtl,
         process,
         sage,
@@ -87,6 +98,7 @@ test-suite metis-test
         Test.Anf
         Test.Compile
         Test.CoreToAsm
+        Test.LLVM
         Test.Liveness
         Test.SimplifyAsm
     -- other-extensions:
@@ -101,6 +113,8 @@ test-suite metis-test
         filepath,
         foldable-buildable,
         hspec,
+        llvm-hs-pure >= 9 && < 10,
+        llvm-hs-pretty >= 0.9 && < 0.10,
         metis,
         mtl,
         process,

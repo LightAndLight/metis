@@ -17,7 +17,7 @@
 
             gdb
             
-            llvmPackages_15.llvm
+            llvmPackages_9.llvm
             libxml2.dev
           ];
           
