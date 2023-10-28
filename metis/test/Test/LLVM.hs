@@ -1,24 +1,36 @@
+{-# LANGUAGE OverloadedRecordDot #-}
+
 module Test.LLVM (spec) where
 
+import qualified Data.Text as Text
 import qualified Data.Text.Lazy as Lazy
 import qualified Data.Text.Lazy.IO
+import ErrorReporting (saveLogsOnFailure)
 import LLVM.IRBuilder.Module (buildModule)
 import LLVM.Pretty (ppllvm)
-import Metis.Compile (ProgramResult (..), Stdin (..), Stdout (..), runProgram)
-import Metis.LLVM (llvmTypeDicts)
+import Metis.Compile (ProgramError (..), ProgramResult (..), Stdin (..), Stdout (..), runProgram)
+import qualified Metis.Core as Core
+import Metis.LLVM (llvmFunction, llvmTypeDicts)
+import qualified Metis.Literal as Literal
+import qualified Metis.Type as Type
 import System.IO (hClose)
 import System.IO.Temp (withSystemTempFile)
 import Test.Hspec (Spec, describe, expectationFailure, it)
 
 shouldCompile :: Lazy.Text -> IO ()
 shouldCompile moduleText =
-  withSystemTempFile "testCompile.ll" $ \path handle -> do
+  withSystemTempFile "testCompile.ll" $ \path handle -> saveLogsOnFailure path $ do
     Data.Text.Lazy.IO.hPutStrLn handle moduleText
     hClose handle
     result <- runProgram "llc" [path, "--filetype=null", "-o", "/dev/null"] NoStdin IgnoreStdout
     case result of
       Left err ->
-        expectationFailure $ show err
+        expectationFailure . unlines $
+          [ "llc failed"
+          , "exit code: " <> show err.status
+          , "stdout: " <> Text.unpack err.stdout
+          , "stderr: " <> Text.unpack err.stderr
+          ]
       Right ProgramResult{stdout = ()} ->
         pure ()
 
@@ -28,5 +40,29 @@ spec =
     describe "llvmTypeDicts" $ do
       it "compiles" $ do
         let module_ = buildModule "test" llvmTypeDicts
+        let moduleText = ppllvm module_
+        shouldCompile moduleText
+    describe "llvmFunction" $ do
+      it "compiles `f x = 1 + (if x then 2 else 3)`" $ do
+        let fn =
+              Core.Function
+                { name = "f"
+                , tyArgs = []
+                , args = [("x", Type.Bool)]
+                , retTy = Type.Uint64
+                , body =
+                    Core.Add
+                      Type.Uint64
+                      (Core.Literal $ Literal.Uint64 1)
+                      ( Core.IfThenElse
+                          Type.Uint64
+                          (Core.Var 0)
+                          (Core.Literal $ Literal.Uint64 2)
+                          (Core.Literal $ Literal.Uint64 3)
+                      )
+                }
+        let module_ = buildModule "test" $ do
+              typeDicts <- llvmTypeDicts
+              llvmFunction typeDicts (const undefined) fn
         let moduleText = ppllvm module_
         shouldCompile moduleText

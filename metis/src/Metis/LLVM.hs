@@ -2,16 +2,20 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE RecursiveDo #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_GHC -Wno-incomplete-record-updates #-}
 
-module Metis.LLVM (llvmExpr, TypeDicts (..), llvmTypeDicts) where
+module Metis.LLVM (llvmExpr, llvmFunction, TypeDicts (..), llvmTypeDicts) where
 
 import Bound.Scope.Simple (fromScope)
 import Bound.Var (unvar)
 import Control.Monad (forM)
 import Control.Monad.Fix (MonadFix)
+import Data.String (fromString)
 import Data.Text (Text)
+import qualified Data.Text as Text
+import Data.Word (Word64)
 import LLVM.AST (Definition (..))
 import LLVM.AST.Constant (Constant (..))
 import LLVM.AST.Global (Global (..), Parameter (..), functionDefaults)
@@ -19,7 +23,7 @@ import LLVM.AST.Name (Name)
 import LLVM.AST.Operand (Operand (..))
 import LLVM.AST.Type (Type (..), i1, i64, i8, ptr, void)
 import LLVM.IRBuilder.Constant (bit, int64)
-import LLVM.IRBuilder.Instruction (add, bitcast, call, condBr, load, phi, retVoid, store, sub)
+import LLVM.IRBuilder.Instruction (add, bitcast, br, call, condBr, load, phi, ret, retVoid, store, sub)
 import LLVM.IRBuilder.Module (MonadModuleBuilder, ParameterName (..), emitDefn, global, typedef)
 import LLVM.IRBuilder.Monad (IRBuilderT, MonadIRBuilder, block, emptyIRBuilder, fresh, named, runIRBuilderT)
 import qualified Metis.Core as Core
@@ -60,8 +64,13 @@ llvmExpr typeDicts nameOperand tyOperand varOperand expr =
       rec condBr cond' ifTrue ifFalse
           ifTrue <- block
           t' <- llvmExpr typeDicts nameOperand tyOperand varOperand t
+          br after
+
           ifFalse <- block
           e' <- llvmExpr typeDicts nameOperand tyOperand varOperand e
+
+          br after
+          after <- block
       phi [(t', ifTrue), (e', ifFalse)]
     Core.Call _ty f tyArgs args -> do
       f' <- llvmExpr typeDicts nameOperand tyOperand varOperand f
@@ -89,7 +98,6 @@ llvmTypeArg typeDicts tyOperand ty =
     Core.Type.Unknown ->
       error "TODO: Unknown"
 
-{-
 llvmType :: Core.Type ty -> Type
 llvmType ty =
   case ty of
@@ -99,15 +107,15 @@ llvmType ty =
       i64
     Core.Type.Bool ->
       i1
-    Core.Type.Fn args ret ->
+    Core.Type.Fn args retTy ->
       FunctionType
-        { resultType = llvmType ret
+        { resultType = llvmType retTy
         , argumentTypes = fmap llvmType args
         , isVarArg = False
         }
-    Core.Type.Forall tyArgs (fromScope -> Core.Type.Fn args ret) ->
+    Core.Type.Forall tyArgs (fromScope -> Core.Type.Fn args retTy) ->
       FunctionType
-        { resultType = llvmType ret
+        { resultType = llvmType retTy
         , argumentTypes = fmap (const $ ptr void) tyArgs <> fmap llvmType args
         , isVarArg = False
         }
@@ -123,7 +131,6 @@ llvmType ty =
       StructureType{isPacked = True, elementTypes = []}
     Core.Type.Unknown ->
       error "TODO: Unknown"
--}
 
 llvmLiteral :: Literal -> Operand
 llvmLiteral lit =
@@ -290,3 +297,22 @@ llvmTypeDicts = do
         }
 
   pure TypeDicts{uint64, bool, ptr = ptrDict, unit}
+
+llvmFunction :: (MonadModuleBuilder m, MonadFix m) => TypeDicts -> (Text -> Operand) -> Core.Function -> m Constant
+llvmFunction typeDicts nameOperand Core.Function{name, tyArgs, args, retTy, body} = do
+  let tyArgCount = length tyArgs
+  function
+    (fromString $ Text.unpack name)
+    ( fmap (\(argName, _argKind) -> (ptr i8 {- void -}, fromString $ Text.unpack argName)) tyArgs
+        <> fmap (\(argName, argTy) -> (llvmType argTy, fromString $ Text.unpack argName)) args
+    )
+    (llvmType retTy)
+    $ \llvmArgs -> do
+      result <-
+        llvmExpr
+          typeDicts
+          nameOperand
+          (\index -> llvmArgs !! fromIntegral @Word64 @Int index)
+          (\index -> llvmArgs !! (tyArgCount + fromIntegral @Word64 @Int index))
+          body
+      ret result
