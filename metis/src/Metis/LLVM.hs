@@ -9,12 +9,13 @@
 module Metis.LLVM (llvmExpr, llvmFunction, TypeDicts (..), llvmTypeDicts) where
 
 import Bound.Scope.Simple (fromScope)
-import Bound.Var (unvar)
+import Bound.Var (Var (..), unvar)
 import Control.Monad (forM)
 import Control.Monad.Fix (MonadFix)
 import Data.String (fromString)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Void (Void, absurd)
 import Data.Word (Word64)
 import LLVM.AST (Definition (..))
 import LLVM.AST.Constant (Constant (..))
@@ -23,10 +24,11 @@ import LLVM.AST.Name (Name)
 import LLVM.AST.Operand (Operand (..))
 import LLVM.AST.Type (Type (..), i1, i64, i8, ptr, void)
 import LLVM.IRBuilder.Constant (bit, int64)
-import LLVM.IRBuilder.Instruction (add, bitcast, br, call, condBr, load, phi, ret, retVoid, store, sub)
+import LLVM.IRBuilder.Instruction (add, alloca, bitcast, br, call, condBr, load, phi, ret, retVoid, store, sub)
 import LLVM.IRBuilder.Module (MonadModuleBuilder, ParameterName (..), emitDefn, global, typedef)
 import LLVM.IRBuilder.Monad (IRBuilderT, MonadIRBuilder, block, emptyIRBuilder, fresh, named, runIRBuilderT)
 import qualified Metis.Core as Core
+import Metis.Kind (Kind)
 import Metis.Literal (Literal)
 import qualified Metis.Literal as Literal
 import qualified Metis.Type as Core (Type)
@@ -34,13 +36,16 @@ import qualified Metis.Type as Core.Type (Type (..))
 
 llvmExpr ::
   (MonadModuleBuilder m, MonadIRBuilder m, MonadFix m) =>
+  (Text -> Core.Type ty) ->
+  (tm -> Core.Type ty) ->
+  (ty -> Kind) ->
   TypeDicts ->
   (Text -> Operand) ->
   (ty -> Operand) ->
   (tm -> Operand) ->
   Core.Expr ty tm ->
   m Operand
-llvmExpr typeDicts nameOperand tyOperand varOperand expr =
+llvmExpr nameTy varTy tyKind typeDicts nameOperand tyOperand varOperand expr =
   case expr of
     Core.Var v ->
       pure $ varOperand v
@@ -49,34 +54,60 @@ llvmExpr typeDicts nameOperand tyOperand varOperand expr =
     Core.Literal l ->
       pure $ llvmLiteral l
     Core.Add _ a b -> do
-      a' <- llvmExpr typeDicts nameOperand tyOperand varOperand a
-      b' <- llvmExpr typeDicts nameOperand tyOperand varOperand b
+      a' <- llvmExpr nameTy varTy tyKind typeDicts nameOperand tyOperand varOperand a
+      b' <- llvmExpr nameTy varTy tyKind typeDicts nameOperand tyOperand varOperand b
       add a' b'
     Core.Subtract _ a b -> do
-      a' <- llvmExpr typeDicts nameOperand tyOperand varOperand a
-      b' <- llvmExpr typeDicts nameOperand tyOperand varOperand b
+      a' <- llvmExpr nameTy varTy tyKind typeDicts nameOperand tyOperand varOperand a
+      b' <- llvmExpr nameTy varTy tyKind typeDicts nameOperand tyOperand varOperand b
       sub a' b'
-    Core.Let _ _ _ value body -> do
-      value' <- llvmExpr typeDicts nameOperand tyOperand varOperand value
-      llvmExpr typeDicts nameOperand tyOperand (unvar (\() -> value') varOperand) (fromScope body)
+    Core.Let _ _ valueTy value body -> do
+      value' <- llvmExpr nameTy varTy tyKind typeDicts nameOperand tyOperand varOperand value
+      llvmExpr nameTy (unvar (\() -> valueTy) varTy) tyKind typeDicts nameOperand tyOperand (unvar (\() -> value') varOperand) (fromScope body)
     Core.IfThenElse _ cond t e -> do
-      cond' <- llvmExpr typeDicts nameOperand tyOperand varOperand cond
+      cond' <- llvmExpr nameTy varTy tyKind typeDicts nameOperand tyOperand varOperand cond
       rec condBr cond' ifTrue ifFalse
           ifTrue <- block
-          t' <- llvmExpr typeDicts nameOperand tyOperand varOperand t
+          t' <- llvmExpr nameTy varTy tyKind typeDicts nameOperand tyOperand varOperand t
           br after
 
           ifFalse <- block
-          e' <- llvmExpr typeDicts nameOperand tyOperand varOperand e
+          e' <- llvmExpr nameTy varTy tyKind typeDicts nameOperand tyOperand varOperand e
 
           br after
           after <- block
       phi [(t', ifTrue), (e', ifFalse)]
     Core.Call _ty f tyArgs args -> do
-      f' <- llvmExpr typeDicts nameOperand tyOperand varOperand f
+      let fTy = Core.typeOf nameTy varTy f
+      f' <- llvmExpr nameTy varTy tyKind typeDicts nameOperand tyOperand varOperand f
       tyArgs' <- traverse (llvmTypeArg typeDicts tyOperand) tyArgs
-      args' <- traverse (llvmExpr typeDicts nameOperand tyOperand varOperand) args
-      call f' (fmap (,[]) (tyArgs' <> args'))
+      (argTys, retTy) <-
+        case fTy of
+          Core.Type.Fn argTys retTy ->
+            pure (fmap F <$> argTys, F <$> retTy)
+          Core.Type.Forall _tyArgKinds (fromScope -> Core.Type.Fn argTys retTy) ->
+            pure (argTys, retTy)
+          _ ->
+            error "can't call non-function type"
+      args' <-
+        traverse
+          ( \(arg, argTy) -> do
+              arg' <- llvmExpr nameTy varTy tyKind typeDicts nameOperand tyOperand varOperand arg
+              case argTy of
+                Core.Type.Var (B index) -> do
+                  argRef <- alloca (llvmType tyKind typeDicts.type_ $ tyArgs !! fromIntegral @Word64 @Int index) (Just arg') 1
+                  bitcast argRef (ptr i8 {- void -})
+                _ ->
+                  pure arg'
+          )
+          (zip args argTys)
+      result <- call f' (fmap (,[]) (tyArgs' <> args'))
+      case retTy of
+        Core.Type.Var (B index) -> do
+          let resultTy = llvmType tyKind typeDicts.type_ $ tyArgs !! fromIntegral @Word64 @Int index
+          typedResult <- bitcast result (ptr resultTy)
+          load typedResult 1
+        _ -> pure result
 
 llvmTypeArg :: (Monad m) => TypeDicts -> (ty -> Operand) -> Core.Type ty -> m Operand
 llvmTypeArg typeDicts tyOperand ty =
@@ -98,35 +129,36 @@ llvmTypeArg typeDicts tyOperand ty =
     Core.Type.Unknown ->
       error "TODO: Unknown"
 
-llvmType :: Core.Type ty -> Type
-llvmType ty =
+llvmType :: (ty -> Kind) -> Type -> Core.Type ty -> Type
+llvmType tyKind typeDict ty =
   case ty of
     Core.Type.Var _a ->
-      ptr void
+      ptr i8 {- void -}
     Core.Type.Uint64 ->
       i64
     Core.Type.Bool ->
       i1
     Core.Type.Fn args retTy ->
       FunctionType
-        { resultType = llvmType retTy
-        , argumentTypes = fmap llvmType args
+        { resultType = llvmType tyKind typeDict retTy
+        , argumentTypes = fmap (llvmType tyKind typeDict) args
         , isVarArg = False
         }
     Core.Type.Forall tyArgs (fromScope -> Core.Type.Fn args retTy) ->
-      FunctionType
-        { resultType = llvmType retTy
-        , argumentTypes = fmap (const $ ptr void) tyArgs <> fmap llvmType args
-        , isVarArg = False
-        }
+      let tyKind' = unvar (\index -> snd $ tyArgs !! fromIntegral @Word64 @Int index) tyKind
+       in FunctionType
+            { resultType = llvmType tyKind' typeDict retTy
+            , argumentTypes = fmap (const $ ptr i8 {- void -}) tyArgs <> fmap (llvmType tyKind' typeDict) args
+            , isVarArg = False
+            }
     Core.Type.Forall tyArgs (fromScope -> body) ->
       FunctionType
-        { resultType = llvmType body
-        , argumentTypes = fmap (const $ ptr void) tyArgs
+        { resultType = llvmType (unvar (\index -> snd $ tyArgs !! fromIntegral @Word64 @Int index) tyKind) typeDict body
+        , argumentTypes = fmap (const $ ptr i8 {- void -}) tyArgs
         , isVarArg = False
         }
     Core.Type.Ptr inner ->
-      ptr $ llvmType inner
+      ptr $ llvmType tyKind typeDict inner
     Core.Type.Unit ->
       StructureType{isPacked = True, elementTypes = []}
     Core.Type.Unknown ->
@@ -141,7 +173,8 @@ llvmLiteral lit =
       if b then bit 1 else bit 0
 
 data TypeDicts = TypeDicts
-  { uint64 :: Operand
+  { type_ :: Type
+  , uint64 :: Operand
   , bool :: Operand
   , ptr :: Operand
   , unit :: Operand
@@ -296,20 +329,30 @@ llvmTypeDicts = do
             ]
         }
 
-  pure TypeDicts{uint64, bool, ptr = ptrDict, unit}
+  pure TypeDicts{type_ = typeDict, uint64, bool, ptr = ptrDict, unit}
 
-llvmFunction :: (MonadModuleBuilder m, MonadFix m) => TypeDicts -> (Text -> Operand) -> Core.Function -> m Constant
-llvmFunction typeDicts nameOperand Core.Function{name, tyArgs, args, retTy, body} = do
+llvmFunction ::
+  (MonadModuleBuilder m, MonadFix m) =>
+  (Text -> Core.Type Void) ->
+  TypeDicts ->
+  (Text -> Operand) ->
+  Core.Function ->
+  m Constant
+llvmFunction nameTy typeDicts nameOperand Core.Function{name, tyArgs, args, retTy, body} = do
   let tyArgCount = length tyArgs
+  let tyKind = \index -> snd $ tyArgs !! fromIntegral @Word64 @Int index
   function
     (fromString $ Text.unpack name)
-    ( fmap (\(argName, _argKind) -> (ptr i8 {- void -}, fromString $ Text.unpack argName)) tyArgs
-        <> fmap (\(argName, argTy) -> (llvmType argTy, fromString $ Text.unpack argName)) args
+    ( fmap (\(argName, _argKind) -> (ptr typeDicts.type_, fromString $ Text.unpack argName)) tyArgs
+        <> fmap (\(argName, argTy) -> (llvmType tyKind typeDicts.type_ argTy, fromString $ Text.unpack argName)) args
     )
-    (llvmType retTy)
+    (llvmType tyKind typeDicts.type_ retTy)
     $ \llvmArgs -> do
       result <-
         llvmExpr
+          (fmap absurd . nameTy)
+          (\index -> snd $ args !! fromIntegral @Word64 @Int index)
+          tyKind
           typeDicts
           nameOperand
           (\index -> llvmArgs !! fromIntegral @Word64 @Int index)
