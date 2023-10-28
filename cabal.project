@@ -6,3 +6,15 @@ source-repository-package
     type: git
     location: https://github.com/LightAndLight/sage.git
     tag: 334542b
+	
+source-repository-package
+    type: git
+    location: https://github.com/llvm-hs/llvm-hs.git
+    tag: 5bca2c1
+    subdir: llvm-hs
+    
+source-repository-package
+    type: git
+    location: https://github.com/llvm-hs/llvm-hs.git
+    tag: 5bca2c1
+    subdir: llvm-hs-pure

@@ -36,6 +36,7 @@ library
         Metis.Isa
         Metis.Isa.X86_64
         Metis.Kind
+        Metis.LLVM
         Metis.Literal
         Metis.Liveness
         Metis.Log
@@ -53,6 +54,8 @@ library
         hashable,
         indexed-traversable,
         lens,
+        llvm-hs,
+        llvm-hs-pure,
         mtl,
         process,
         sage,

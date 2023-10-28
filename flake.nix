@@ -16,7 +16,12 @@
             haskellPackages.fourmolu
 
             gdb
+            
+            llvmPackages_15.llvm
+            libxml2.dev
           ];
+          
+          LD_LIBRARY_PATH = "${pkgs.xml2}/lib";
 
           # TODO: make this better. It's a `metis` implementation detail.
           LIBC_LIB_PATH = pkgs.stdenv.cc.libc;
