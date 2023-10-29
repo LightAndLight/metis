@@ -1,5 +1,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecursiveDo #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
@@ -23,8 +24,8 @@ import LLVM.AST.Global (Global (..), Parameter (..), functionDefaults)
 import LLVM.AST.Name (Name)
 import LLVM.AST.Operand (Operand (..))
 import LLVM.AST.Type (Type (..), i1, i64, i8, ptr, void)
-import LLVM.IRBuilder.Constant (bit, int64)
-import LLVM.IRBuilder.Instruction (add, alloca, bitcast, br, call, condBr, load, phi, ret, retVoid, store, sub)
+import LLVM.IRBuilder.Constant (bit, int32, int64)
+import LLVM.IRBuilder.Instruction (add, alloca, bitcast, br, call, condBr, gep, load, phi, ret, retVoid, store, sub)
 import LLVM.IRBuilder.Module (MonadModuleBuilder, ParameterName (..), emitDefn, global, typedef)
 import LLVM.IRBuilder.Monad (IRBuilderT, MonadIRBuilder, block, emptyIRBuilder, fresh, named, runIRBuilderT)
 import qualified Metis.Core as Core
@@ -102,7 +103,15 @@ llvmExpr nameTy varTy tyKind typeDicts nameOperand tyOperand varOperand expr =
                   pure arg'
           )
           (zip args argTys)
-      result <- call f' (fmap (,[]) (tyArgs' <> args'))
+      destination <-
+        case retTy of
+          Core.Type.Var (B index) -> do
+            let resultTy = llvmType tyKind typeDicts.type_ $ tyArgs !! fromIntegral @Word64 @Int index
+            op <- alloca resultTy Nothing 1
+            op' <- bitcast op (ptr i8 {- void -})
+            pure [(op', [])]
+          _ -> pure []
+      result <- call f' $ destination <> fmap (,[]) (tyArgs' <> args')
       case retTy of
         Core.Type.Var (B index) -> do
           let resultTy = llvmType tyKind typeDicts.type_ $ tyArgs !! fromIntegral @Word64 @Int index
@@ -173,14 +182,6 @@ llvmLiteral lit =
     Literal.Bool b ->
       if b then bit 1 else bit 0
 
-data TypeDicts = TypeDicts
-  { type_ :: Type
-  , uint64 :: Operand
-  , bool :: Operand
-  , ptr :: Operand
-  , unit :: Operand
-  }
-
 -- Taken from <https://github.com/llvm-hs/llvm-hs/blob/5bca2c1a2a3aa98ecfb19181e7a5ebbf3e212b76/llvm-hs-pure/src/LLVM/IRBuilder/Module.hs>
 function ::
   (MonadModuleBuilder m) =>
@@ -214,6 +215,35 @@ function label argtys retty body = do
   emitDefn def
   pure $ GlobalReference funty label
 
+data TypeDicts = TypeDicts
+  { type_ :: Type
+  , uint64 :: Operand
+  , bool :: Operand
+  , ptr :: Operand
+  , unit :: Operand
+  }
+
+copyFnType :: Type
+copyFnType =
+  ptr
+    FunctionType
+      { resultType = void
+      , argumentTypes =
+          -- from
+          [ ptr i8 -- void
+          , -- to
+            ptr i8 -- void
+          ]
+      , isVarArg = False
+      }
+
+callTypeDictCopy :: forall m. (MonadModuleBuilder m, MonadIRBuilder m) => Operand -> Operand -> Operand -> m ()
+callTypeDictCopy dict from to = do
+  fnLocation <- gep dict [int32 0, int32 1]
+  fn <- load fnLocation 1
+  _ <- call fn [(from, []), (to, [])]
+  pure ()
+
 llvmTypeDicts :: (MonadModuleBuilder m) => m TypeDicts
 llvmTypeDicts = do
   typeDict <- do
@@ -223,18 +253,7 @@ llvmTypeDicts = do
         , elementTypes =
             -- size
             [ i64
-            , -- copy
-              ptr
-                FunctionType
-                  { resultType = void
-                  , argumentTypes =
-                      -- from
-                      [ ptr i8 -- void
-                      , -- to
-                        ptr i8 -- void
-                      ]
-                  , isVarArg = False
-                  }
+            , copyFnType
             ]
         }
 
@@ -342,9 +361,17 @@ llvmFunction ::
 llvmFunction nameTy typeDicts nameOperand Core.Function{name, tyArgs, args, retTy, body} = do
   let tyArgCount = length tyArgs
   let tyKind = \index -> snd $ tyArgs !! fromIntegral @Word64 @Int index
+  let
+    destination =
+      case retTy of
+        Core.Type.Var _index ->
+          [(ptr i8 {- void -}, "output")]
+        _ -> []
+    offset = length destination
   function
     (fromString $ Text.unpack name)
-    ( fmap (\(argName, _argKind) -> (ptr typeDicts.type_, fromString $ Text.unpack argName)) tyArgs
+    ( destination
+        <> fmap (\(argName, _argKind) -> (ptr typeDicts.type_, fromString $ Text.unpack argName)) tyArgs
         <> fmap (\(argName, argTy) -> (llvmType tyKind typeDicts.type_ argTy, fromString $ Text.unpack argName)) args
     )
     (llvmType tyKind typeDicts.type_ retTy)
@@ -356,7 +383,14 @@ llvmFunction nameTy typeDicts nameOperand Core.Function{name, tyArgs, args, retT
           tyKind
           typeDicts
           nameOperand
-          (\index -> llvmArgs !! fromIntegral @Word64 @Int index)
-          (\index -> llvmArgs !! (tyArgCount + fromIntegral @Word64 @Int index))
+          (\index -> llvmArgs !! (offset + fromIntegral @Word64 @Int index))
+          (\index -> llvmArgs !! (offset + tyArgCount + fromIntegral @Word64 @Int index))
           body
-      ret result
+      case retTy of
+        Core.Type.Var index -> do
+          let tyArg = llvmArgs !! (offset + fromIntegral @Word64 @Int index)
+          let dest = head llvmArgs
+          _ <- callTypeDictCopy tyArg result dest
+          ret dest
+        _ ->
+          ret result
