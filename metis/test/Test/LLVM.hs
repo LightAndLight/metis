@@ -104,5 +104,4 @@ spec =
                 (\case "id" -> ConstantOperand id''; _ -> undefined)
                 fn
         let moduleText = ppllvm module_
-        Data.Text.Lazy.IO.writeFile "test.ll" moduleText
         shouldCompile moduleText

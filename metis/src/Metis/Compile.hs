@@ -1,5 +1,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE RecursiveDo #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Metis.Compile (
@@ -18,30 +19,28 @@ module Metis.Compile (
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Buildable (collectL')
-import Data.Foldable (for_)
+import Data.Char (ord)
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 import qualified Data.Maybe as Maybe
+import Data.String (fromString)
 import Data.Text (Text)
 import qualified Data.Text.IO as Text.IO
 import Data.Text.Lazy.Builder (Builder)
 import qualified Data.Text.Lazy.Builder as Builder
+import qualified Data.Text.Lazy.IO
 import qualified Data.Text.Lazy.IO as Text.Lazy.IO
 import Data.Void (Void, absurd)
-import Data.Word (Word64)
-import qualified Metis.Anf as Anf
-import Metis.Asm (Statement (..))
-import qualified Metis.Asm as Asm (printAsm)
-import qualified Metis.Asm.Builder as Asm (runAsmBuilderT)
-import qualified Metis.Asm.Class as Asm (block, string)
-import Metis.Codegen (printInstruction_X86_64)
+import LLVM.AST.Constant (Constant (..))
+import LLVM.AST.Operand (Operand (..))
+import LLVM.AST.ParameterAttribute (ParameterAttribute (..))
+import LLVM.AST.Type (Type (..), i32, i8, ptr, void)
+import LLVM.IRBuilder.Instruction (bitcast, call, retVoid)
+import LLVM.IRBuilder.Module (buildModule, extern, externVarArgs, function, global)
+import LLVM.Pretty (ppllvm)
 import qualified Metis.Core as Core
-import Metis.InstSelection (Address (..), Location (..), Value (..), instSelectionEntrypoint_X86_64, instSelectionFunction_X86_64)
-import Metis.Isa (Memory (..), MemoryBase (..), Op2 (..), Symbol (..), call, generalPurposeRegisters, imm, lea, load, mov, xor)
-import Metis.Isa.X86_64 (Register (..), X86_64)
-import qualified Metis.Liveness as Liveness
-import Metis.Log (noLogging)
-import Metis.Type (Type)
+import Metis.LLVM (llvmExpr, llvmFunction, llvmTypeDicts)
+import qualified Metis.Type as Core (Type)
 import qualified Metis.Type as Type
 import qualified System.Directory as Directory
 import qualified System.Environment
@@ -115,9 +114,9 @@ runProgram program args handleStdin handleStdout =
                   pure $ Left ProgramError{status, stdout = stdoutContents, stderr = stderrContents}
       )
 
-assemble :: (MonadIO m) => FilePath -> Builder -> m (Either ProgramError (ProgramResult ()))
-assemble outFile asm =
-  runProgram "as" ["-o", outFile] (BuilderStdin asm) IgnoreStdout
+assemble :: (MonadIO m) => FilePath -> FilePath -> m (Either ProgramError (ProgramResult ()))
+assemble asmFile outFile =
+  runProgram "as" [asmFile, "-o", outFile] NoStdin IgnoreStdout
 
 link :: (MonadIO m) => FilePath -> FilePath -> m (Either ProgramError (ProgramResult ()))
 link inFile outFile = do
@@ -151,7 +150,7 @@ compile buildDir definitions expr outPath = do
   let programName = FilePath.takeBaseName outPath
 
   let
-    coreNameTysMap :: HashMap Text (Type a)
+    coreNameTysMap :: HashMap Text (Core.Type a)
     coreNameTysMap =
       collectL' @(HashMap _ _) $
         fmap
@@ -160,61 +159,73 @@ compile buildDir definitions expr outPath = do
           )
           definitions
 
-    coreNameTys :: Text -> Type a
+    coreNameTys :: Text -> Core.Type a
     coreNameTys name = Maybe.fromMaybe (error $ show name <> " missing from core name types map") $ HashMap.lookup name coreNameTysMap
 
-  let availableRegisters = generalPurposeRegisters @X86_64
-  asm <- fmap (Asm.printAsm printInstruction_X86_64) . Asm.runAsmBuilderT . noLogging $ do
-    let anfDefinitions = fmap (Anf.fromFunction coreNameTys) definitions
-    let (anfInfo, anf) = Anf.fromCore coreNameTys absurd absurd expr
+  llvm <- do
+    let llvmText = ppllvm . buildModule (fromString programName) $ do
+          typeDicts <- llvmTypeDicts
+          rec definitions' <-
+                traverse
+                  ( \fn ->
+                      (,) fn.name
+                        <$> llvmFunction
+                          coreNameTys
+                          typeDicts
+                          nameOperand
+                          fn
+                  )
+                  definitions
+              let nameOperand = ConstantOperand . (collectL' @(HashMap _ _) definitions' HashMap.!)
 
-    let
-      anfNameTysMap :: HashMap Text (Type Anf.Var)
-      anfNameTysMap =
-        collectL' @(HashMap _ _) $
-          fmap
-            (\Anf.Function{name, args, retTy} -> (name, Type.Fn (fmap snd args) retTy))
-            anfDefinitions
+          cprintf <- externVarArgs "printf" [ptr i8 {- void -}] void
 
-      anfNameTys :: Text -> Type Anf.Var
-      anfNameTys name = Maybe.fromMaybe (error $ show name <> " missing from anf name types map") $ HashMap.lookup name anfNameTysMap
+          let s = "%u\n\0" :: String
+          formatString <-
+            global
+              "formatString"
+              ArrayType{nArrayElements = fromIntegral $ length s, elementType = i8}
+              Array{memberType = i8, memberValues = fmap (\c -> Int{integerBits = 8, integerValue = fromIntegral $ ord c}) s}
 
-    for_ anfDefinitions $ \anfFunction -> do
-      let liveness = Liveness.liveness anfFunction.body
-      instSelectionFunction_X86_64 anfNameTys availableRegisters liveness anfFunction
+          cexit <- extern "exit" [i32] void
 
-    resultValue <- do
-      let liveness = Liveness.liveness anf
-      instSelectionEntrypoint_X86_64 anfNameTys availableRegisters liveness "main" anf anfInfo
+          function "main" [] void $ \_ -> do
+            result <- llvmExpr coreNameTys absurd absurd typeDicts nameOperand absurd absurd expr
+            formatString' <- bitcast formatString (ptr i8)
+            _ <- call cprintf [(formatString', [NoCapture]), (result, [])]
+            _ <- call cexit [(ConstantOperand Int{integerBits = 32, integerValue = 0}, [])]
+            retVoid
+    let llvm = buildDir </> programName <.> "ll"
+    liftIO $ Data.Text.Lazy.IO.writeFile llvm llvmText
+    pure llvm
 
-    formatString <- Asm.string "%u\n"
-    _ <-
-      Asm.block
-        "print_and_exit"
-        []
-        Nothing
-        ( fmap
-            Instruction
-            [ lea Op2{src = formatString, dest = Rdi}
-            , case resultValue of
-                ValueAt (Register register) -> mov Op2{src = register, dest = Rsi}
-                ValueAt Stack{offset, size = _} -> load Op2{src = Mem{base = BaseRegister Rbp, offset}, dest = Rsi}
-                AddressOf (Metis.InstSelection.Symbol symbol) -> mov Op2{src = imm symbol, dest = Rsi}
-                AddressOf (Memory mem) -> lea Op2{src = mem, dest = Rsi}
-                Literal lit -> mov Op2{src = imm lit, dest = Rsi}
-            , xor Op2{src = Rax, dest = Rax}
-            , call (Metis.Isa.Symbol "printf")
-            , mov Op2{src = imm (0 :: Word64), dest = Rdi}
-            , call (Metis.Isa.Symbol "exit")
-            ]
-        )
-    pure ()
+  asm <- do
+    let asm = buildDir </> programName <.> "s"
+    llcResult <- runProgram "llc" [llvm, "--filetype=asm", "-o", asm] NoStdin IgnoreStdout
+    case llcResult of
+      Right _ -> pure ()
+      Left ProgramError{status, stdout, stderr} ->
+        liftIO $ do
+          hPutStrLn System.IO.stderr $ "`llc` exited with status " <> show status
+
+          hPutStrLn System.IO.stderr ""
+
+          hPutStrLn System.IO.stderr "stdout:"
+          Text.IO.hPutStrLn System.IO.stderr stdout
+
+          hPutStrLn System.IO.stderr ""
+
+          hPutStrLn System.IO.stderr "stderr:"
+          Text.IO.hPutStrLn System.IO.stderr stderr
+
+          System.Exit.exitFailure
+    pure asm
 
   -- TODO: this was helpful for debugging some bad ASM. Perhaps it should be a compile option?
   -- liftIO $ Text.Lazy.IO.writeFile (buildDir </> programName <.> "s") (Builder.toLazyText asm)
 
   let objectFile = buildDir </> programName <.> "o"
-  assembleResult <- assemble objectFile asm
+  assembleResult <- assemble asm objectFile
   case assembleResult of
     Right _ -> pure ()
     Left ProgramError{status, stdout, stderr} ->

@@ -25,20 +25,11 @@ common warnings
 library
     import:           warnings
     exposed-modules:  
-        Metis.InstSelection
-        Metis.Anf
-        Metis.Asm
-        Metis.Asm.Builder
-        Metis.Asm.Class
-        Metis.Codegen
         Metis.Compile
         Metis.Core
-        Metis.Isa
-        Metis.Isa.X86_64
         Metis.Kind
         Metis.LLVM
         Metis.Literal
-        Metis.Liveness
         Metis.Log
         Metis.Type
     -- other-modules:
@@ -67,6 +58,7 @@ library
         --
         -- llvm-hs >= 9 && < 10,
         llvm-hs-pure >= 9 && < 10,
+        llvm-hs-pretty >= 0.9 && < 0.10,
         mtl,
         process,
         sage,
@@ -94,13 +86,8 @@ test-suite metis-test
     default-language: Haskell2010
     other-modules:
         ErrorReporting
-        Test.InstSelection
-        Test.Anf
         Test.Compile
-        Test.CoreToAsm
         Test.LLVM
-        Test.Liveness
-        Test.SimplifyAsm
     -- other-extensions:
     type:             exitcode-stdio-1.0
     hs-source-dirs:   test

@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -6,9 +7,9 @@ module Test.Compile (spec) where
 import Bound.Scope.Simple (toScope)
 import Bound.Var (Var (..))
 import Control.Exception (SomeException, catch, fromException, throwIO)
+import Data.Bifunctor (first)
 import Data.CallStack (HasCallStack)
 import Data.Text (Text)
-import qualified Data.Text as Text
 import Data.Void (Void)
 import ErrorReporting (hunitFailureToResult)
 import Metis.Compile (ProgramError (..), ProgramResult (..), Stdin (..), Stdout (..), assemble, compile, runProgram)
@@ -48,25 +49,21 @@ spec :: Spec
 spec =
   describe "Test.Compile" $ do
     describe "assemble" $ do
-      it "success - empty" $ do
-        result <- assemble "/dev/null" ""
+      it "success - empty" . withTempDir "test" $ \tempDir -> do
+        let file = tempDir </> "test.s"
+        writeFile file ""
+        result <- assemble file "/dev/null"
         result `shouldBe` Right ProgramResult{stdout = ()}
-      it "success - mov $1, %rax" $ do
-        result <- assemble "/dev/null" "mov $1, %rax"
+      it "success - mov $1, %rax" . withTempDir "test" $ \tempDir -> do
+        let file = tempDir </> "test.s"
+        writeFile file "mov $1, %rax"
+        result <- assemble file "/dev/null"
         result `shouldBe` Right ProgramResult{stdout = ()}
-      it "error - mov x" $ do
-        result <- assemble "/dev/null" "mov x\n"
-        result
-          `shouldBe` Left
-            ProgramError
-              { status = 1
-              , stdout = ""
-              , stderr =
-                  Text.unlines
-                    [ "{standard input}: Assembler messages:"
-                    , "{standard input}:1: Error: number of operands mismatch for `mov'"
-                    ]
-              }
+      it "error - mov x" . withTempDir "test" $ \tempDir -> do
+        let file = tempDir </> "test.s"
+        writeFile file "mov x\n"
+        result <- assemble file "/dev/null"
+        first (.status) result `shouldBe` Left 1
 
     describe "compile and run" $ do
       let

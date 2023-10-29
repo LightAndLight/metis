@@ -6,7 +6,7 @@
 {-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_GHC -Wno-incomplete-record-updates #-}
 
-module Metis.LLVM (llvmExpr, llvmFunction, TypeDicts (..), llvmTypeDicts) where
+module Metis.LLVM (llvmExpr, llvmFunction, llvmType, TypeDicts (..), llvmTypeDicts) where
 
 import Bound.Scope.Simple (fromScope)
 import Bound.Var (Var (..), unvar)
@@ -95,7 +95,8 @@ llvmExpr nameTy varTy tyKind typeDicts nameOperand tyOperand varOperand expr =
               arg' <- llvmExpr nameTy varTy tyKind typeDicts nameOperand tyOperand varOperand arg
               case argTy of
                 Core.Type.Var (B index) -> do
-                  argRef <- alloca (llvmType tyKind typeDicts.type_ $ tyArgs !! fromIntegral @Word64 @Int index) (Just arg') 1
+                  argRef <- alloca (llvmType tyKind typeDicts.type_ $ tyArgs !! fromIntegral @Word64 @Int index) Nothing 1
+                  store argRef 1 arg'
                   bitcast argRef (ptr i8 {- void -})
                 _ ->
                   pure arg'
