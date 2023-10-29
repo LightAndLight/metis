@@ -4,10 +4,10 @@
 <!-- omit in toc -->
 ## Contents
 
-* [Types](#types)
-* [Type constructors](#type-constructors)
-* [Type parameters](#type-parameters)
-* [Prior art](#prior-art)
+- [Types](#types)
+- [Type constructors](#type-constructors)
+- [Type parameters](#type-parameters)
+- [Prior art](#prior-art)
 
 ## Types
 
@@ -16,11 +16,11 @@ e.g. `a : Type`
 ```c
 typedef struct {
   size_t size;
-  void(*move)(const void* /* self */, void* /* from */, void* /* to */);
+  void(*copy)(const void* /* self */, void* /* from */, void* /* to */);
 } Type;
 
-void Type_move(const Type* self, void* from, void* to) {
-  self->move((void*)self, from, to);
+void Type_copy(const Type* self, void* from, void* to) {
+  self->copy((void*)self, from, to);
 }
 ```
 
@@ -31,13 +31,13 @@ void Type_move(const Type* self, void* from, void* to) {
 #### `Bool : Type`
 
 ```c
-void Type_Bool_move(const void* self, void* from, void* to) {
+void Type_Bool_copy(const void* self, void* from, void* to) {
   *((char*)to) = *((char*)from);
 }
 
 const Type Type_Bool = {
   .size = 1,
-  .move = Type_Bool_move,
+  .copy = Type_Bool_copy,
 };
 ```
 
@@ -45,13 +45,13 @@ const Type Type_Bool = {
 #### `Uint64 : Type`
 
 ```c
-void Type_Uint64_move(const void* self, void* from, void* to) {
+void Type_Uint64_copy(const void* self, void* from, void* to) {
   *((long long*)to) = *((long long*)from);
 }
 
 const Type Type_Uint64 = {
   .size = 8,
-  .move = Type_Uint64_move,
+  .copy = Type_Uint64_copy,
 };
 ```
 
@@ -95,14 +95,14 @@ void* Type_Pair_second(const Type_Pair* self, void* pair) {
   return pair + self->a->size;
 }
 
-void Type_Pair_move(const void* self_void, void* from, void* to) {
+void Type_Pair_copy(const void* self_void, void* from, void* to) {
   Type_Pair* self = (Type_Pair*)self_void;
-  Type_move(
+  Type_copy(
     self->a,
     Type_Pair_first(self, from),
     Type_Pair_first(self, to)
   );
-  Type_move(
+  Type_copy(
     self->b,
     Type_Pair_second(self, from),
     Type_Pair_second(self, to)
@@ -111,7 +111,7 @@ void Type_Pair_move(const void* self_void, void* from, void* to) {
 
 void Type_Pair_create(const Type* a, const Type* b, Type_Pair* result) {
   result->base.size = a->size + b->size;
-  result->base.move = Type_Pair_move;
+  result->base.copy = Type_Pair_copy;
   result->a = a;
   result->b = b;
 }
@@ -169,14 +169,14 @@ void* Type_FPair_second(const Type_FPair* self, void* fpair) {
   return fpair + self->f_a->size;
 }
 
-void Type_FPair_move(const void* self_void, void* from, void* to) {
+void Type_FPair_copy(const void* self_void, void* from, void* to) {
   Type_FPair* self = (Type_FPair*)self_void;
-  Type_move(
+  Type_copy(
     self->f_a,
     Type_FPair_first(self, from),
     Type_FPair_first(self, to)
   );
-  Type_move(
+  Type_copy(
     self->g_a,
     Type_FPair_second(self, from),
     Type_FPair_second(self, to)
@@ -198,7 +198,7 @@ void Type_FPair_create(const TyCtor* f, const TyCtor* g, const Type* a, Type_FPa
   Type* g_a = (Type*)g_a_data;
   
   result->base.size = f_a->size + g_a->size;
-  result->base.move = Type_FPair_move;
+  result->base.copy = Type_FPair_copy;
   result->f_a = f_a;
   result->g_a = g_a;
 }
@@ -218,7 +218,7 @@ id @(a : Type) (x : a) : a = x
 
 ```c
 void id(Type* type_a, void* x, void* output) {
-  Type_move(x, output);
+  type_a->copy(x, output);
 }
 ```
 
@@ -229,7 +229,7 @@ id True
 ```c
 Bool input = True;
 Bool output;
-id(&Type_Bool, &input, &output);
+id(&Type_Bool, (void*)&input, (void*)&output);
 ```
 
 ## Prior art
